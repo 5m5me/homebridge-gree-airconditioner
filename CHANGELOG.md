@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.3-dry.1] - 2026-11-22
+
+Fork release (5m5me), based on v2.3.2.
+
+- New optional parameter "dryControlEnabled": adds a "Dry" switch to the device in Home App
+- Dry commands are confirmed against the device status and resent up to 2 times
+- If dry control is enabled, turning the Heater Cooler off also powers off a device running in dry mode
+
 ## [2.3.2] - 2026-05-08
 
 **<ins>Reminders:</ins>**

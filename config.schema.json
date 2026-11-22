@@ -289,6 +289,9 @@
             "fanControlEnabled": {
               "type": "boolean"
             },
+            "dryControlEnabled": {
+              "type": "boolean"
+            },
             "silentTimeRange": {
               "type": "string",
               "required": false,
@@ -503,6 +506,15 @@
               "flex": "1 1 50%",
               "title": "Fan control enabled",
               "description": "If checked, a fan control is added to Home App and fan mode support is enabled",
+              "condition": {
+                "functionBody": "return (model.devices && model.devices[arrayIndices] && model.devices[arrayIndices].mac && /^([a-f0-9]{12}|default|[a-f0-9]+@[a-f0-9]{12})$/.test(model.devices[arrayIndices].mac) && model.devices[arrayIndices].disabled !== true);"
+              }
+            },
+            {
+              "key": "devices[].dryControlEnabled",
+              "flex": "1 1 50%",
+              "title": "Dry control enabled",
+              "description": "If checked, a Dry switch is added to the device in Home App and dry mode support is enabled",
               "condition": {
                 "functionBody": "return (model.devices && model.devices[arrayIndices] && model.devices[arrayIndices].mac && /^([a-f0-9]{12}|default|[a-f0-9]+@[a-f0-9]{12})$/.test(model.devices[arrayIndices].mac) && model.devices[arrayIndices].disabled !== true);"
               }

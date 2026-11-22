@@ -271,6 +271,7 @@ It is possible to set some or all parameters to a customized value which is assi
                     "modifyVerticalSwingPosition": 0,
                     "defaultVerticalSwing": 0,
                     "fanControlEnabled": false,
+                    "dryControlEnabled": false,
                     "defaultFanVerticalSwing": 0,
                     "silentTimeRange": "",
                     "disabled": false
@@ -324,6 +325,7 @@ You can always override any default parameter by adding a device identified by M
                     "modifyVerticalSwingPosition": 0,
                     "defaultVerticalSwing": 0,
                     "fanControlEnabled": false,
+                    "dryControlEnabled": false,
                     "defaultFanVerticalSwing": 0,
                     "silentTimeRange": "",
                     "disabled": false
@@ -358,6 +360,7 @@ _It's not recommended to add the port and ip parameters. The above example conta
   * **modifyVerticalSwingPosition** - by default this plugin sets the vertical swing position to the default position of the AC device when oscillation is turned off and leaves the position untouched when the device is powered on; this parameter allows the plugin to modify the vertical swing position (the actual position is controlled by the "defaultVerticalSwing" and/or the "defaultFanVerticalSwing" parameters); valid values: Never (0) = do not modify vertical swing position, let device use default / Override default after power on (1) = override the default position each time the device is powered on _(Only the default position is changing to the selected one when turning on the device. All other positions are kept by the Home App.)_ / Override default after power on or osciallation off (2) = override the default position each time the device is powered on and when oscillation is turned off by the Home App _(Only the default position is changing to the selected one when turning on the device. All other positions are kept by the Home App. Turning off oscillation sets the selected fixed position.)_ / Always set after power on (3) = set the device to the specified vertical position each time it is powered on (regardless of the actual vertical position) / Always set after power on or osciallation off (4) = set the device to the specified vertical position each time it is powered on and when osciallation is turned off by the Home App (regardless of the actual vertical position) _(Each time powered on means that one of the enabled accessories (Heater Cooler or Fan) will be set to active)_
   * **defaultVerticalSwing** - specify the vertical swing position to be used when the plugin modifies it; if overriding is selected, then this value is valid for both heating/cooling and fan modes; if always set is selected, then this value controls only the heating/cooling modes not fan mode; valid values: Device default (0) = use device default, same position as used by the device by default without selecting a specific position / one of the following 5 positions: fixed Highest (2), fixed Higher (3), fixed Middle (4), fixed Lower (5), fixed Lowest (6)
   * **fanControlEnabled** - by default fan mode is not supported by the plugin because Apple's Heater Cooler accessory does not support fan mode; setting this parameter to true adds an additional Fan accessory to the Home App and turns on fan mode support in the plugin
+  * **dryControlEnabled** - by default dry mode is not supported by the plugin because Apple's Heater Cooler accessory does not support dry mode; setting this parameter to true adds a "Dry" switch to the device in the Home App: turning it on puts the device into dry mode, turning it off powers the device off if it is still in dry mode; dry commands are confirmed against the device status and resent up to 2 times
   * **defaultFanVerticalSwing** - specify the vertical swing position to be set in fan mode when always set is selected; valid values: Device default (0) = use device default, same position as used by the device by default without selecting a specific position / one of the following 5 positions: fixed Highest (2), fixed Higher (3), fixed Middle (4), fixed Lower (5), fixed Lowest (6)
   * **silentTimeRange** - specify the time range when device shouldn't beep on commands received (format: HH:MM-HH:MM, e.g.: 22:00-08:30) _(not all AC units support this feature)_
   * **disabled** - set to true if you do not want to control this device in the Home App _(can be used also to temporarily remove the device from Home App but not if the device is not responding on the network any more)_
