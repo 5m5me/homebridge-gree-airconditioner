@@ -1135,54 +1135,60 @@ export class GreeACPlatform {
         }
     }
     handleACMessage = (ac, socket, msg, rinfo) => {
-        if (ac.accessory.context.device.address === rinfo.address) {
-            this.log.debug(`[${ac.getDeviceLabel()}] handleMessage -> %s`, msg.toString());
-            const message = JSON.parse(msg.toString());
-            this.log.debug(`[${ac.getDeviceLabel()}] handleMessage -> Encryption version: %i`, ac.accessory.context.device.encryptionVersion);
-            if (!message.pack) {
-                this.log.debug(`[${ac.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
-                this.log.warn(`[${ac.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
-                return;
-            }
-            let pack;
-            if (ac.accessory.context.device.encryptionVersion === 1) {
-                pack = crypto.decrypt_v1(message.pack, message.i === 1 ? undefined : ac.key);
-            }
-            else if (ac.accessory.context.device.encryptionVersion === 2 && message.tag !== undefined) {
-                pack = crypto.decrypt_v2(message.pack, message.tag, message.i === 1 ? undefined : ac.key);
-            }
-            else {
-                this.log.debug(`[${ac.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
-                this.log.warn(`[${ac.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
-                return;
-            }
-            this.log.debug(`[${ac.getDeviceLabel()}] handleMessage - Package -> %j`, pack);
-            switch (pack.t.toLowerCase()) {
-                case 'bindok': // package type is binding confirmation
-                    if (!ac.accessory.bound) {
-                        this.log.debug(`[${ac.getDeviceLabel()}] Device binding in progress`);
-                        ac.key = pack.key;
-                        this.log.debug(`[${ac.getDeviceLabel()}] Device key -> ${ac.key}`);
-                        ac.requestDeviceStatus();
-                    }
-                    break;
-                case 'dat': // package type is device status
-                case 'res': // package type is response
-                    if (!ac.accessory.bound) {
-                        ac.accessory.bound = true;
-                        ac.initAccessory();
-                        this.log.success(`[${ac.getDeviceLabel()}] Device is bound -> ${ac.accessory.context.device.mac}`);
-                        socket.on('message', ac.handleMessage);
-                        socket.off('message', this.handleACMessage);
-                        ac.requestDeviceStatus();
-                        setInterval(ac.requestDeviceStatus.bind(ac), ac.deviceConfig.statusUpdateInterval * 1000);
-                    }
-                    break;
-                default:
+        // this listener stays attached after binding, so nothing may escape it (a UDP message handler)
+        try {
+            if (ac.accessory.context.device.address === rinfo.address) {
+                this.log.debug(`[${ac.getDeviceLabel()}] handleMessage -> %s`, msg.toString());
+                const message = JSON.parse(msg.toString());
+                this.log.debug(`[${ac.getDeviceLabel()}] handleMessage -> Encryption version: %i`, ac.accessory.context.device.encryptionVersion);
+                if (!message.pack) {
                     this.log.debug(`[${ac.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
                     this.log.warn(`[${ac.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
-                    break;
+                    return;
+                }
+                let pack;
+                if (ac.accessory.context.device.encryptionVersion === 1) {
+                    pack = crypto.decrypt_v1(message.pack, message.i === 1 ? undefined : ac.key);
+                }
+                else if (ac.accessory.context.device.encryptionVersion === 2 && message.tag !== undefined) {
+                    pack = crypto.decrypt_v2(message.pack, message.tag, message.i === 1 ? undefined : ac.key);
+                }
+                else {
+                    this.log.debug(`[${ac.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
+                    this.log.warn(`[${ac.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
+                    return;
+                }
+                this.log.debug(`[${ac.getDeviceLabel()}] handleMessage - Package -> %j`, pack);
+                switch (pack.t.toLowerCase()) {
+                    case 'bindok': // package type is binding confirmation
+                        if (!ac.accessory.bound) {
+                            this.log.debug(`[${ac.getDeviceLabel()}] Device binding in progress`);
+                            ac.key = pack.key;
+                            this.log.debug(`[${ac.getDeviceLabel()}] Device key -> ${ac.key}`);
+                            ac.requestDeviceStatus();
+                        }
+                        break;
+                    case 'dat': // package type is device status
+                    case 'res': // package type is response
+                        if (!ac.accessory.bound) {
+                            ac.accessory.bound = true;
+                            ac.initAccessory();
+                            this.log.success(`[${ac.getDeviceLabel()}] Device is bound -> ${ac.accessory.context.device.mac}`);
+                            socket.on('message', ac.handleMessage);
+                            socket.off('message', this.handleACMessage);
+                            ac.requestDeviceStatus();
+                            setInterval(ac.requestDeviceStatus.bind(ac), ac.deviceConfig.statusUpdateInterval * 1000);
+                        }
+                        break;
+                    default:
+                        this.log.debug(`[${ac.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
+                        this.log.warn(`[${ac.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
+                        break;
+                }
             }
+        }
+        catch (err) {
+            this.log.debug(`[${ac.getDeviceLabel()}] handleACMessage - Error: %s`, err?.message);
         }
     };
 }

@@ -23,6 +23,8 @@ export declare class GreeAirConditioner {
     private dryTimer?;
     key?: string;
     lastResponseAt: number;
+    private lastSavedContext?;
+    private lastUnreadableWarningAt?;
     cloudSend?: (pack: string, tag?: string) => boolean;
     private cols?;
     private status;
@@ -114,6 +116,7 @@ export declare class GreeAirConditioner {
         port: number;
         size: number;
     }) => void;
+    private saveContextIfChanged;
     processPack(pack: any): void;
     sendMessage(message: unknown): void;
     sendCommand(cmd: Record<string, unknown>): void;
