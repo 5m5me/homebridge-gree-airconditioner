@@ -35,10 +35,23 @@ export function formatDeviceLine(device: CloudDeviceInfo): string {
   ].join(' | ');
 }
 
-async function readStatus(api: GreeCloudApi, region: string, login: { userId: number; token: string }, mac: string): Promise<number> {
+type SessionOptions = ConstructorParameters<typeof CloudSession>[0];
+
+// exported with an injectable session factory so the failure paths can be tested without a network
+export async function readStatus(
+  api: Pick<GreeCloudApi, 'getAllDevices' | 'login'>,
+  region: string,
+  login: { userId: number; token: string },
+  mac: string,
+  createSession: (options: SessionOptions) => CloudSession = (options) => new CloudSession(options),
+): Promise<number> {
   const device = (await api.getAllDevices()).find((d) => d.mac.toLowerCase() === mac.toLowerCase());
   if (!device) {
     console.log(`Probe failed: device ${mac} is not in this account`);
+    return 1;
+  }
+  if (typeof device.key !== 'string' || device.key.length !== 16) {
+    console.log(`Probe failed: device ${mac} has no usable key`);
     return 1;
   }
   return new Promise<number>((resolve) => {
@@ -52,7 +65,7 @@ async function readStatus(api: GreeCloudApi, region: string, login: { userId: nu
       resolve(code);
     };
     try {
-      session = new CloudSession({ region, userId: login.userId, token: login.token, renew: () => api.login() });
+      session = createSession({ region, userId: login.userId, token: login.token, renew: () => api.login() });
     } catch (err) {
       finish(1, `Probe failed: ${err instanceof Error ? err.message : 'unknown error'}`);
       return;
@@ -75,7 +88,11 @@ async function readStatus(api: GreeCloudApi, region: string, login: { userId: nu
       if (active.connected) {
         clearInterval(timers.poll);
         console.log(`Connected to ${GREE_MQTT_SERVERS[region]}.`);
-        active.send(device.mac, { t: 'status', cols: STATUS_COLS });
+        try {
+          active.send(device.mac, { t: 'status', cols: STATUS_COLS });
+        } catch {
+          finish(1, 'Probe failed: could not send the status request');
+        }
       }
     }, 100);
   });

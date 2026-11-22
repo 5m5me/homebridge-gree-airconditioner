@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
 import { setImmediate } from 'node:timers';
+import process from 'node:process';
+import console from 'node:console';
 
 import {
   GREE_MQTT_SERVERS,
@@ -16,8 +18,9 @@ import {
   macFromTopic,
   randomCid,
   randomClientId,
+  redactSecrets,
 } from '../dist/cloud/cloudSession.js';
-import { parseProbeArgs } from '../dist/cloud/cloudProbe.js';
+import { parseProbeArgs, readStatus } from '../dist/cloud/cloudProbe.js';
 
 const KEY = 'abcdefghijklmnop';
 const MAC = '580d0d872e16';
@@ -133,6 +136,7 @@ test('start connects with the expected url and options', () => {
   assert.equal(o.rejectUnauthorized, false);
   assert.equal(o.reconnectPeriod, 5000);
   assert.equal(o.connectTimeout, 30000);
+  assert.equal(o.reconnectOnConnackError, true);
 });
 
 test('subscribes on connect and when a device registers late', () => {
@@ -355,4 +359,403 @@ test('parseProbeArgs', () => {
   assert.deepEqual(parseProbeArgs(['--status', MAC]), { configPath: DEFAULT, statusMac: MAC });
   assert.deepEqual(parseProbeArgs(['/tmp/c.json', '--status', MAC]), { configPath: '/tmp/c.json', statusMac: MAC });
   assert.deepEqual(parseProbeArgs(['--status', MAC, '/tmp/c.json']), { configPath: '/tmp/c.json', statusMac: MAC });
+});
+
+// helpers for the robustness tests
+function levelledLog() {
+  const lines = { info: [], warn: [], debug: [] };
+  return {
+    lines,
+    log: { info: (m) => lines.info.push(m), warn: (m) => lines.warn.push(m), debug: (m) => lines.debug.push(m) },
+    all: () => [...lines.info, ...lines.warn, ...lines.debug],
+  };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test('redactSecrets replaces every occurrence and ignores empty secrets', () => {
+  assert.equal(redactSecrets('a SECRET b SECRET c OTHER', ['SECRET', '', 'OTHER']), 'a [redacted] b [redacted] c [redacted]');
+  assert.equal(redactSecrets('nothing here', ['', 'x1']), 'nothing here');
+  assert.equal(redactSecrets('abc', []), 'abc');
+  assert.equal(redactSecrets('token2', ['token', 'token2']), '[redacted]');
+});
+
+test('a non-auth error opens a new client after 30 seconds when still disconnected', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { session, clients } = makeSession();
+    session.start();
+    clients[0].emit('error', new Error('Connection refused: Server unavailable'));
+    mock.timers.tick(29_999);
+    assert.equal(clients.length, 1);
+    mock.timers.tick(1);
+    assert.equal(clients.length, 2);
+    assert.equal(clients[0].ended, true);
+    assert.equal(clients[1].options.password, TOKEN);
+    assert.equal(clients[1].options.username, '42');
+    session.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('the error fallback does nothing when the session connected meanwhile', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { session, clients } = makeSession();
+    session.start();
+    clients[0].emit('error', new Error('Connection refused: Server unavailable'));
+    clients[0].emit('connect');
+    mock.timers.tick(60_000);
+    assert.equal(clients.length, 1);
+    assert.equal(clients[0].ended, false);
+    session.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('only one error fallback timer is pending and stop cancels it', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { session, clients } = makeSession();
+    session.start();
+    clients[0].emit('error', new Error('Connection refused: Server unavailable'));
+    mock.timers.tick(10_000);
+    clients[0].emit('error', new Error('Connection refused: Server unavailable'));
+    clients[0].emit('error', new Error('Connection refused: Server unavailable'));
+    mock.timers.tick(20_000);
+    assert.equal(clients.length, 2);
+    mock.timers.tick(100_000);
+    assert.equal(clients.length, 2);
+    clients[1].emit('error', new Error('Connection refused: Server unavailable'));
+    session.stop();
+    mock.timers.tick(100_000);
+    assert.equal(clients.length, 2);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('an auth refusal with no renew function still recovers through the fallback', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { session, clients } = makeSession();
+    session.start();
+    clients[0].emit('error', new Error('Connection refused: Not authorized'));
+    mock.timers.tick(30_000);
+    assert.equal(clients.length, 2);
+    session.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('connection errors are warned once per distinct text and the token is redacted', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { log, lines, all } = levelledLog();
+    const { session, clients } = makeSession({ log });
+    session.registerDevice(MAC, KEY, () => {});
+    session.start();
+    clients[0].emit('error', new Error(`refused for ${TOKEN} and ${KEY}`));
+    clients[0].emit('error', new Error(`refused for ${TOKEN} and ${KEY}`));
+    assert.equal(lines.warn.length, 1);
+    clients[0].emit('error', new Error('a different error'));
+    assert.equal(lines.warn.length, 2);
+    assert.match(lines.warn[0], /\[redacted\]/);
+    session.stop();
+    for (const line of all()) {
+      assert.ok(!line.includes(TOKEN), line);
+      assert.ok(!line.includes(KEY), line);
+    }
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('subscribe and publish error text is redacted', () => {
+  const { log, lines } = levelledLog();
+  const { session, clients } = makeSession({ log });
+  session.registerDevice(MAC, KEY, () => {});
+  session.start();
+  clients[0].subscribe = (topics, options, callback) => callback(new Error(`sub failed ${TOKEN}`));
+  clients[0].publish = (topic, payload, options, callback) => callback(new Error(`pub failed ${KEY}`));
+  clients[0].emit('connect');
+  session.publish(MAC, 'pk');
+  session.stop();
+  assert.equal(lines.warn.length, 2);
+  for (const line of lines.warn) {
+    assert.ok(!line.includes(TOKEN) && !line.includes(KEY), line);
+    assert.match(line, /\[redacted\]/);
+  }
+});
+
+test('renewal is not called twice within 5 minutes and a deferred attempt runs when the interval ends', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let clock = 1_000_000;
+    let renewCalls = 0;
+    const { session, clients } = makeSession({
+      now: () => clock,
+      renew: async () => {
+        renewCalls++;
+        return { userId: 50 + renewCalls, token: `tok-${renewCalls}` };
+      },
+    });
+    session.start();
+    clients[0].emit('error', new Error('Not authorized'));
+    await flush();
+    assert.equal(renewCalls, 1);
+    assert.equal(clients.length, 2);
+    // a second trigger 1 minute later is deferred, and repeated triggers add no second timer
+    clock += 60_000;
+    clients[1].emit('error', new Error('Not authorized'));
+    clients[1].emit('error', new Error('Bad username or password'));
+    await flush();
+    assert.equal(renewCalls, 1);
+    mock.timers.tick(239_000);
+    clock += 239_000;
+    await flush();
+    assert.equal(renewCalls, 1);
+    mock.timers.tick(1_000);
+    clock += 1_000;
+    await flush();
+    assert.equal(renewCalls, 2);
+    assert.equal(clients.length, 3);
+    assert.equal(clients[2].options.password, 'tok-2');
+    session.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a deferred renewal is cancelled by stop', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let renewCalls = 0;
+    const { session, clients } = makeSession({
+      now: () => 5_000_000,
+      renew: async () => {
+        renewCalls++;
+        return { userId: 43, token: 'x' };
+      },
+    });
+    session.start();
+    clients[0].emit('error', new Error('Not authorized'));
+    await flush();
+    clients[1].emit('error', new Error('Not authorized'));
+    session.stop();
+    mock.timers.tick(600_000);
+    await flush();
+    assert.equal(renewCalls, 1);
+    assert.equal(clients.length, 2);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('failed renewals back off 60s, 120s, 240s up to 30 minutes and reset after a success', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let clock = 0;
+    let renewCalls = 0;
+    let failing = true;
+    const { session, clients } = makeSession({
+      now: () => clock,
+      renew: async () => {
+        renewCalls++;
+        if (failing) {
+          throw new Error('nope');
+        }
+        return { userId: 60, token: 'good' };
+      },
+    });
+    session.start();
+    clients[0].emit('error', new Error('Not authorized'));
+    await flush();
+    assert.equal(renewCalls, 1);
+    let calls = 1;
+    for (const delay of [60, 120, 240, 480, 960, 1800, 1800]) {
+      mock.timers.tick(delay * 1000 - 1);
+      clock += delay * 1000 - 1;
+      await flush();
+      assert.equal(renewCalls, calls, `no attempt before ${delay}s`);
+      mock.timers.tick(1);
+      clock += 1;
+      await flush();
+      calls++;
+      assert.equal(renewCalls, calls, `attempt at ${delay}s`);
+    }
+    // success resets the back-off: the next failure waits 60 seconds again
+    failing = false;
+    mock.timers.tick(1800 * 1000);
+    clock += 1800 * 1000;
+    await flush();
+    assert.equal(clients.length, 2);
+    failing = true;
+    clock += 10 * 60_000;
+    clients[1].emit('error', new Error('Not authorized'));
+    await flush();
+    const before = renewCalls;
+    mock.timers.tick(59_999);
+    await flush();
+    assert.equal(renewCalls, before);
+    mock.timers.tick(1);
+    await flush();
+    assert.equal(renewCalls, before + 1);
+    session.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a throwing renew or a throwing connect during renewal is a failed renewal, not an unhandled rejection', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const rejections = [];
+  const onRejection = (reason) => rejections.push(reason);
+  process.on('unhandledRejection', onRejection);
+  try {
+    // synchronous throw from renew
+    let renewCalls = 0;
+    const first = makeSession({
+      renew: () => {
+        renewCalls++;
+        if (renewCalls === 1) {
+          throw new Error('sync failure');
+        }
+        return Promise.resolve({ userId: 70, token: 'ok' });
+      },
+    });
+    first.session.start();
+    first.clients[0].emit('error', new Error('Not authorized'));
+    await flush();
+    assert.equal(renewCalls, 1);
+    assert.equal(first.clients.length, 1);
+    mock.timers.tick(60_000);
+    await flush();
+    assert.equal(renewCalls, 2);
+    assert.equal(first.clients.length, 2);
+    first.session.stop();
+
+    // connect throws while opening the new client
+    let connectCalls = 0;
+    const clients = [];
+    const { log, lines } = levelledLog();
+    let renews = 0;
+    const session = new CloudSession({
+      region: 'Australia',
+      userId: 42,
+      token: TOKEN,
+      log,
+      connect: (url, options) => {
+        connectCalls++;
+        if (connectCalls === 2) {
+          throw new Error(`connect failure ${TOKEN}`);
+        }
+        const client = new FakeClient(url, options);
+        clients.push(client);
+        return client;
+      },
+      renew: async () => {
+        renews++;
+        return { userId: 80, token: 'tok' };
+      },
+    });
+    session.start();
+    clients[0].emit('error', new Error('Not authorized'));
+    await flush();
+    assert.equal(renews, 1);
+    assert.equal(clients.length, 1);
+    assert.ok(lines.warn.some((l) => l.includes('60 seconds')));
+    mock.timers.tick(60_000);
+    await flush();
+    assert.equal(renews, 2);
+    assert.equal(clients.length, 2);
+    session.stop();
+    await flush();
+    assert.deepEqual(rejections, []);
+  } finally {
+    process.off('unhandledRejection', onRejection);
+    mock.timers.reset();
+  }
+});
+
+test('a throwing pack handler logs a fixed warning and does not throw', () => {
+  const { log, lines, all } = levelledLog();
+  const { session, clients } = makeSession({ log });
+  session.registerDevice(MAC, KEY, () => {
+    throw new Error(`handler detail ${TOKEN}`);
+  });
+  session.start();
+  clients[0].emit('connect');
+  assert.doesNotThrow(() => clients[0].emit('message', `response/${MAC}/x`, envelopeFor(MESSAGE)));
+  assert.deepEqual(lines.warn, ['A cloud device handler failed']);
+  assert.ok(all().every((l) => !l.includes('handler detail')));
+  // parse failures stay at debug level
+  clients[0].emit('message', `response/${MAC}/x`, Buffer.from('not json'));
+  assert.deepEqual(lines.warn, ['A cloud device handler failed']);
+  assert.ok(lines.debug.includes('Could not process a cloud message'));
+  session.stop();
+});
+
+function probeDevice(key) {
+  return { name: 'Gym', mac: MAC, key };
+}
+
+async function captureProbe(run) {
+  const lines = [];
+  const original = mock.method(console, 'log', (line) => lines.push(String(line)));
+  try {
+    const code = await run();
+    return { code, lines };
+  } finally {
+    original.mock.restore();
+  }
+}
+
+test('the status probe refuses a device with no usable key', async () => {
+  for (const key of ['', 'short', undefined]) {
+    let created = 0;
+    const api = { getAllDevices: async () => [probeDevice(key)], login: async () => ({ userId: 1, token: 't' }) };
+    const { code, lines } = await captureProbe(() =>
+      readStatus(api, 'Australia', { userId: 1, token: 't' }, MAC, () => {
+        created++;
+        throw new Error('must not be created');
+      }),
+    );
+    assert.equal(code, 1);
+    assert.deepEqual(lines, [`Probe failed: device ${MAC} has no usable key`]);
+    assert.equal(created, 0);
+  }
+});
+
+test('the status probe reports a failure to send and stops the session', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  try {
+    let stopped = false;
+    const fake = {
+      registerDevice: () => {},
+      start: () => {},
+      stop: () => {
+        stopped = true;
+      },
+      connected: true,
+      send: () => {
+        throw new Error('bad key');
+      },
+    };
+    const api = { getAllDevices: async () => [probeDevice(KEY)], login: async () => ({ userId: 1, token: 't' }) };
+    const { code, lines } = await captureProbe(async () => {
+      const pending = readStatus(api, 'Australia', { userId: 1, token: 't' }, MAC, () => fake);
+      await flush();
+      mock.timers.tick(100);
+      return pending;
+    });
+    assert.equal(code, 1);
+    assert.equal(stopped, true);
+    assert.deepEqual(lines, ['Connected to mqtt-au.gree.com.', 'Probe failed: could not send the status request']);
+  } finally {
+    mock.timers.reset();
+  }
 });
