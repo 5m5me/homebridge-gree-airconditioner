@@ -13,7 +13,7 @@ import { PLATFORM_NAME, PLUGIN_NAME, UDP_SCAN_PORT, DEFAULT_DEVICE_CONFIG, MODIF
   DEF_SCAN_INTERVAL, TEMPERATURE_LIMITS, TEMPERATURE_STEPS, BINDING_TIMEOUT, CLOUD_MIN_STATUS_INTERVAL, LOST_AFTER, SWEEP_MIN_INTERVAL,
   SWEEP_BATCH_SIZE, SWEEP_BATCH_DELAY } from './settings.js';
 import type { CloudConfig } from './settings.js';
-import { isIPv4, subnetPrefix, sweepTargets, isLost, sweepDue } from './addressSweep.js';
+import { isPrivateIPv4, lostAfterSeconds, subnetPrefix, sweepTargets, isLost, sweepDue } from './addressSweep.js';
 
 import commands from './commands.js';
 import { version } from './version.js';
@@ -53,6 +53,7 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
   private cloudRetryTimer?: ReturnType<typeof setTimeout>;
   private cloudRetryDelay = 60; // seconds
   private cloudStopped = false;
+  private stopped = false;
 
   // address search for lost local devices
   private acs: Record<string, GreeAirConditioner> = {};
@@ -138,6 +139,7 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
 
     // stop the cloud session and any pending cloud retry when Homebridge shuts down
     this.api.on('shutdown', () => {
+      this.stopped = true;
       this.cloudStopped = true;
       this.sweepTimers.forEach((timer) => clearTimeout(timer));
       this.sweepTimers = [];
@@ -833,6 +835,9 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
    */
   private addCachedAddress(accessory: MyPlatformAccessory): void {
     try {
+      if (Object.keys(this.pluginAddresses).length === 0) {
+        return;
+      }
       const device = accessory.context?.device;
       if (accessory.context?.deviceType && accessory.context.deviceType !== 'HeaterCooler') {
         return;
@@ -841,7 +846,7 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
         return;
       }
       const address = device.address;
-      if (!isIPv4(address) || this.pluginAddresses[address] !== undefined) {
+      if (!isPrivateIPv4(address) || this.pluginAddresses[address] !== undefined) {
         return;
       }
       this.pluginAddresses[address] = '255.255.255.255';
@@ -856,10 +861,14 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
    * in the /24 of their last known address. Called from the repeating scan only. Never throws.
    */
   private sweepForLostDevices(): void {
+    if (this.stopped) {
+      return;
+    }
     try {
       const now = Date.now();
       const configured = (Array.isArray(this.config.devices) ? this.config.devices : []) as Array<{ mac?: unknown, ip?: unknown,
-        disabled?: unknown, cloudControl?: unknown }>;
+        disabled?: unknown, cloudControl?: unknown, statusUpdateInterval?: unknown }>;
+      const defaultItem = configured.find((item) => typeof item?.mac === 'string' && item.mac.toLowerCase() === 'default' && item.disabled !== true);
       const prefixes: Record<string, boolean> = {};
       configured.forEach((item) => {
         if (item?.disabled === true || item?.cloudControl === true || typeof item?.mac !== 'string' || !/^[a-f0-9]{12}$/.test(item.mac)) {
@@ -867,7 +876,10 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
         }
         const mac = item.mac;
         const lastResponseAt = this.acs[mac]?.lastResponseAt ?? 0;
-        if (!isLost(lastResponseAt, this.startedAt, now, LOST_AFTER * 1000)) {
+        // same value the unit polls with: its handler's effective config, else config item, else default device, else plugin default
+        const interval = this.acs[mac]?.deviceConfig?.statusUpdateInterval ?? item.statusUpdateInterval ?? defaultItem?.statusUpdateInterval ??
+          DEFAULT_DEVICE_CONFIG.statusUpdateInterval;
+        if (!isLost(lastResponseAt, this.startedAt, now, lostAfterSeconds(interval, LOST_AFTER) * 1000)) {
           if (this.lostLogged[mac]) {
             this.lostLogged[mac] = false;
             this.log.info(`Device ${mac} is answering again`);
@@ -875,7 +887,7 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
           return;
         }
         const known = this.devices[mac]?.context?.device?.address;
-        const address = isIPv4(known) ? known : (isIPv4(item.ip) ? item.ip : undefined);
+        const address = isPrivateIPv4(known) ? known : (isPrivateIPv4(item.ip) ? item.ip : undefined);
         const prefix = subnetPrefix(address);
         if (!address || !prefix) {
           if (!this.lostLogged[mac]) {
@@ -919,6 +931,9 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
       this.log.debug(`Address search of ${prefix}.0/24 started (${targets.length} addresses)`);
       let errorLogged = false;
       const sendBatch = (start: number) => {
+        if (this.stopped) {
+          return;
+        }
         try {
           targets.slice(start, start + SWEEP_BATCH_SIZE).forEach((addr) => {
             try {
