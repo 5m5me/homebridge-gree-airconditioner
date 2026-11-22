@@ -48,6 +48,7 @@ export interface DeviceConfig {
     ip?: string;
     fanControlEnabled?: boolean;
     dryControlEnabled?: boolean;
+    cloudControl?: boolean;
     silentTimeRange?: string;
 }
 interface DefaultDeviceConfig extends DeviceConfig {
@@ -77,4 +78,5 @@ export interface CloudConfig {
     password?: string;
     region?: string;
 }
+export declare const CLOUD_MIN_STATUS_INTERVAL = 30;
 export {};

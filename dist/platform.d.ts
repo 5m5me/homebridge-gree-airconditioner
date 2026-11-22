@@ -25,7 +25,19 @@ export declare class GreeACPlatform implements DynamicPlatformPlugin {
     private pluginAddresses;
     ports: number[];
     private tempUnit;
+    private cloudSession?;
+    private cloudKeys;
+    private cloudRetryTimer?;
+    private cloudRetryDelay;
+    private cloudStopped;
     constructor(log: Logging, config: PlatformConfig, api: API);
+    /**
+     * Gree cloud control: signs in once, opens one cloud session and registers the configured cloudControl devices.
+     * Never throws; on failure it retries with increasing delay.
+     */
+    private startCloud;
+    private runCloud;
+    private registerCloudDevice;
     /**
      * This function is invoked when homebridge restores cached accessories from disk at startup.
      * It should be used to set up event handlers for characteristics and update respective values.

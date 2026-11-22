@@ -13,6 +13,9 @@ export const GREE_MQTT_SERVERS = {
 };
 export const GREE_MQTT_PORT = 1984;
 const RENEW_RETRY_MS = 60_000;
+const RENEW_RETRY_MAX_MS = 30 * 60_000;
+const RENEW_MIN_INTERVAL_MS = 5 * 60_000;
+const ERROR_FALLBACK_MS = 30_000;
 const CLOSES_BEFORE_RENEW = 3;
 export function encryptPack(message, key) {
     const cipher = createCipheriv('aes-128-ecb', Buffer.from(key, 'utf8'), null);
@@ -46,6 +49,15 @@ export function macFromTopic(topic) {
     }
     return undefined;
 }
+// replaces every occurrence of each secret with [redacted]; empty secrets are ignored
+export function redactSecrets(text, secrets) {
+    let result = text;
+    // longest first, so a secret that contains another one is replaced as a whole
+    for (const secret of secrets.filter((s) => s !== '').sort((a, b) => b.length - a.length)) {
+        result = result.split(secret).join('[redacted]');
+    }
+    return result;
+}
 export function randomCid() {
     return String(randomInt(1, 10)) + Array.from({ length: 9 }, () => String(randomInt(0, 10))).join('');
 }
@@ -59,9 +71,11 @@ export class CloudSession {
     log;
     connectFn;
     renew;
+    now;
     devices = new Map();
     userId;
     token;
+    previousToken;
     client;
     started = false;
     stopped = false;
@@ -69,6 +83,10 @@ export class CloudSession {
     closeCount = 0;
     renewing = false;
     renewTimer;
+    fallbackTimer;
+    lastRenewAttemptAt;
+    renewFailures = 0;
+    lastErrorMessage;
     constructor(options) {
         const broker = GREE_MQTT_SERVERS[options.region];
         if (!broker) {
@@ -80,6 +98,7 @@ export class CloudSession {
         this.log = options.log;
         this.connectFn = options.connect ?? defaultConnect;
         this.renew = options.renew;
+        this.now = options.now ?? Date.now;
     }
     get connected() {
         return this.isConnected;
@@ -97,6 +116,10 @@ export class CloudSession {
         if (this.renewTimer) {
             clearTimeout(this.renewTimer);
             this.renewTimer = undefined;
+        }
+        if (this.fallbackTimer) {
+            clearTimeout(this.fallbackTimer);
+            this.fallbackTimer = undefined;
         }
         const client = this.client;
         this.client = undefined;
@@ -116,7 +139,7 @@ export class CloudSession {
         const envelope = buildEnvelope(device.mac, pack, this.userId, randomCid(), tag);
         this.client.publish(requestTopic(device.mac), JSON.stringify(envelope), { qos: 1 }, (err) => {
             if (err) {
-                this.log?.warn(`Cloud publish to ${device.mac} failed: ${err.message}`);
+                this.log?.warn(`Cloud publish to ${device.mac} failed: ${this.redact(err.message)}`);
             }
         });
         return true;
@@ -139,6 +162,7 @@ export class CloudSession {
             rejectUnauthorized: false,
             reconnectPeriod: 5000,
             connectTimeout: 30000,
+            reconnectOnConnackError: true,
         });
         this.client = client;
         // events from a client that has been replaced are ignored
@@ -148,6 +172,7 @@ export class CloudSession {
             }
             this.isConnected = true;
             this.closeCount = 0;
+            this.lastErrorMessage = undefined;
             this.log?.info(`Connected to ${this.broker}`);
             for (const device of this.devices.values()) {
                 this.subscribeDevice(client, device.mac);
@@ -168,11 +193,20 @@ export class CloudSession {
             if (this.client !== client || this.stopped) {
                 return;
             }
-            const message = err?.message ?? '';
-            this.log?.debug(`Cloud connection error: ${message}`);
-            if (message.includes('Not authorized') || message.includes('Bad username or password')) {
+            const raw = typeof err?.message === 'string' ? err.message : '';
+            const message = this.redact(raw);
+            if (message !== this.lastErrorMessage) {
+                this.lastErrorMessage = message;
+                this.log?.warn(`Cloud connection error: ${message}`);
+            }
+            else {
+                this.log?.debug(`Cloud connection error repeated: ${message}`);
+            }
+            if (raw.includes('Not authorized') || raw.includes('Bad username or password')) {
                 this.startRenewal();
             }
+            // the library may not reconnect after a refusal: make sure the session recovers on its own
+            this.scheduleFallback();
         }));
         client.on('message', ((topic, payload) => {
             if (this.client !== client || this.stopped) {
@@ -184,14 +218,17 @@ export class CloudSession {
     subscribeDevice(client, mac) {
         client.subscribe(topicsFor(mac), { qos: 1 }, (err) => {
             if (err) {
-                this.log?.warn(`Cloud subscribe for ${mac} failed: ${err.message}`);
+                this.log?.warn(`Cloud subscribe for ${mac} failed: ${this.redact(err.message)}`);
             }
         });
     }
     handleMessage(topic, payload) {
+        let device;
+        let pack;
+        let kind;
         try {
             const mac = macFromTopic(topic);
-            const device = mac ? this.devices.get(mac.toLowerCase()) : undefined;
+            device = mac ? this.devices.get(mac.toLowerCase()) : undefined;
             if (!device) {
                 return;
             }
@@ -199,55 +236,133 @@ export class CloudSession {
                 this.log?.debug(`Cloud connect message for ${device.mac}`);
                 return;
             }
-            const kind = topic.startsWith('response/') ? 'response' : 'status';
+            kind = topic.startsWith('response/') ? 'response' : 'status';
             const envelope = JSON.parse(payload.toString('utf8'));
             if (typeof envelope.pack !== 'string' || envelope.pack === '') {
                 return;
             }
-            device.handler(decryptPackTolerant(envelope.pack, device.key), kind);
+            pack = decryptPackTolerant(envelope.pack, device.key);
         }
         catch {
             // the payload and the error text are not logged
             this.log?.debug('Could not process a cloud message');
+            return;
         }
+        try {
+            device.handler(pack, kind);
+        }
+        catch {
+            // the error text is not logged
+            this.log?.warn('A cloud device handler failed');
+        }
+    }
+    redact(text) {
+        const secrets = [this.token];
+        if (this.previousToken) {
+            secrets.push(this.previousToken);
+        }
+        for (const device of this.devices.values()) {
+            secrets.push(device.key);
+        }
+        return redactSecrets(text, secrets);
+    }
+    // after an error, make sure a new client is opened if the session is still not connected 30 seconds later
+    scheduleFallback() {
+        if (this.fallbackTimer || this.stopped || this.renewing) {
+            return;
+        }
+        this.fallbackTimer = setTimeout(() => {
+            this.fallbackTimer = undefined;
+            if (this.stopped || this.renewing || this.isConnected) {
+                return;
+            }
+            this.log?.info('Opening a new cloud connection after an error');
+            try {
+                const old = this.client;
+                this.client = undefined;
+                try {
+                    old?.end(true);
+                }
+                catch {
+                    // the old client is already replaced
+                }
+                this.openClient();
+            }
+            catch {
+                this.log?.warn('Opening a new cloud connection failed');
+                this.scheduleFallback();
+            }
+        }, ERROR_FALLBACK_MS);
     }
     startRenewal() {
         if (!this.renew || this.renewing || this.stopped) {
             return;
         }
         this.renewing = true;
+        // at least 5 minutes between renewal attempts, so a broker-only outage cannot cause a storm of sign-ins
+        const wait = this.lastRenewAttemptAt === undefined ? 0 : this.lastRenewAttemptAt + RENEW_MIN_INTERVAL_MS - this.now();
+        if (wait > 0) {
+            this.log?.debug(`Signing in again is deferred for ${Math.ceil(wait / 1000)} seconds`);
+            this.scheduleRenewal(wait);
+            return;
+        }
         this.attemptRenewal();
+    }
+    scheduleRenewal(delayMs) {
+        this.renewTimer = setTimeout(() => {
+            this.renewTimer = undefined;
+            this.attemptRenewal();
+        }, delayMs);
     }
     attemptRenewal() {
         const renew = this.renew;
         if (!renew || this.stopped) {
             return;
         }
+        this.lastRenewAttemptAt = this.now();
         this.log?.info('Signing in to the Gree cloud again');
-        renew().then((credentials) => {
+        let pending;
+        try {
+            pending = Promise.resolve(renew());
+        }
+        catch {
+            this.renewalFailed();
+            return;
+        }
+        pending.then((credentials) => {
             if (this.stopped) {
                 return;
             }
-            this.userId = credentials.userId;
-            this.token = credentials.token;
-            this.closeCount = 0;
-            this.isConnected = false;
-            const old = this.client;
-            this.client = undefined;
-            old?.end(true);
-            this.renewing = false;
-            this.openClient();
-        }, () => {
-            // the error text is not logged
-            this.log?.warn('Signing in to the Gree cloud again failed, retrying in 60 seconds');
-            if (this.stopped) {
-                return;
+            try {
+                this.applyCredentials(credentials);
             }
-            this.renewTimer = setTimeout(() => {
-                this.renewTimer = undefined;
-                this.attemptRenewal();
-            }, RENEW_RETRY_MS);
-        });
+            catch {
+                this.renewalFailed();
+            }
+        }, () => this.renewalFailed());
+    }
+    applyCredentials(credentials) {
+        this.previousToken = this.token;
+        this.userId = credentials.userId;
+        this.token = credentials.token;
+        this.closeCount = 0;
+        this.isConnected = false;
+        const old = this.client;
+        this.client = undefined;
+        old?.end(true);
+        this.openClient();
+        this.renewFailures = 0;
+        this.renewing = false;
+    }
+    renewalFailed() {
+        if (this.stopped) {
+            return;
+        }
+        this.renewFailures += 1;
+        const delay = Math.min(RENEW_RETRY_MS * 2 ** (this.renewFailures - 1), RENEW_RETRY_MAX_MS);
+        // the error text is not logged
+        this.log?.warn(`Signing in to the Gree cloud again failed, retrying in ${Math.round(delay / 1000)} seconds`);
+        this.scheduleRenewal(delay);
     }
 }
 //# sourceMappingURL=cloudSession.js.map

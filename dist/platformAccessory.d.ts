@@ -22,6 +22,7 @@ export declare class GreeAirConditioner {
     private dryResends;
     private dryTimer?;
     key?: string;
+    cloudSend?: (pack: string, tag?: string) => boolean;
     private cols?;
     private status;
     private tsAccessory;
@@ -112,6 +113,7 @@ export declare class GreeAirConditioner {
         port: number;
         size: number;
     }) => void;
+    processPack(pack: any): void;
     sendMessage(message: unknown): void;
     sendCommand(cmd: Record<string, unknown>): void;
     requestDeviceStatus(): void;

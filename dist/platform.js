@@ -3,7 +3,9 @@ import crypto from './crypto.js';
 import { networkInterfaces } from 'os';
 import { readFileSync } from 'fs';
 import { GreeAirConditioner } from './platformAccessory.js';
-import { PLATFORM_NAME, PLUGIN_NAME, UDP_SCAN_PORT, DEFAULT_DEVICE_CONFIG, MODIFY_VERTICAL_SWING_POSITION, ENCRYPTION_VERSION, TS_TYPE, DEF_SCAN_INTERVAL, TEMPERATURE_LIMITS, TEMPERATURE_STEPS, BINDING_TIMEOUT } from './settings.js';
+import { GreeCloudApi, DEFAULT_CLOUD_REGION } from './cloud/cloudApi.js';
+import { CloudSession } from './cloud/cloudSession.js';
+import { PLATFORM_NAME, PLUGIN_NAME, UDP_SCAN_PORT, DEFAULT_DEVICE_CONFIG, MODIFY_VERTICAL_SWING_POSITION, ENCRYPTION_VERSION, TS_TYPE, DEF_SCAN_INTERVAL, TEMPERATURE_LIMITS, TEMPERATURE_STEPS, BINDING_TIMEOUT, CLOUD_MIN_STATUS_INTERVAL } from './settings.js';
 import commands from './commands.js';
 import { version } from './version.js';
 /**
@@ -27,6 +29,12 @@ export class GreeACPlatform {
     pluginAddresses = {};
     ports = [];
     tempUnit;
+    // Gree cloud control (only used for devices with cloudControl enabled)
+    cloudSession;
+    cloudKeys = {};
+    cloudRetryTimer;
+    cloudRetryDelay = 60; // seconds
+    cloudStopped = false;
     // This is only required when using Custom Services and Characteristics not support by HomeKit
     //public readonly CustomServices: any;
     //public readonly CustomCharacteristics: any;
@@ -90,6 +98,131 @@ export class GreeACPlatform {
                 // run the method to discover / register your devices as accessories
                 this.discoverDevices();
             }
+            // cloud controlled devices do not need the local network, so the cloud is started in any case
+            this.startCloud();
+        });
+        // stop the cloud session and any pending cloud retry when Homebridge shuts down
+        this.api.on('shutdown', () => {
+            this.cloudStopped = true;
+            if (this.cloudRetryTimer) {
+                clearTimeout(this.cloudRetryTimer);
+                this.cloudRetryTimer = undefined;
+            }
+            try {
+                this.cloudSession?.stop();
+            }
+            catch (err) {
+                this.log.debug('Gree cloud: stop failed:', err?.message);
+            }
+        });
+    }
+    /**
+     * Gree cloud control: signs in once, opens one cloud session and registers the configured cloudControl devices.
+     * Never throws; on failure it retries with increasing delay.
+     */
+    startCloud() {
+        if (this.cloudStopped) {
+            return;
+        }
+        const cloud = this.config.cloud;
+        const configured = (this.config.devices ?? [])
+            .filter((item) => item?.cloudControl === true && item.disabled !== true && typeof item.mac === 'string' &&
+            /^[a-f0-9]{12}$/.test(item.mac.toLowerCase()))
+            .map((item) => item.mac.toLowerCase());
+        if (configured.length === 0) {
+            return;
+        }
+        if (!cloud?.username || !cloud?.password) {
+            this.log.warn('Cloud control is enabled for a device but the Gree+ cloud account is not configured');
+            return;
+        }
+        const region = cloud.region || DEFAULT_CLOUD_REGION;
+        const username = cloud.username;
+        const password = cloud.password;
+        this.runCloud(region, username, password, configured).catch(() => {
+            // runCloud handles its own errors; this only guarantees that no rejection is ever unhandled
+        });
+    }
+    async runCloud(region, username, password, configured) {
+        let session;
+        try {
+            const api = new GreeCloudApi(region, username, password);
+            const credentials = await api.login();
+            if (this.cloudStopped) {
+                return;
+            }
+            const devices = await api.getAllDevices();
+            if (this.cloudStopped) {
+                return;
+            }
+            session = new CloudSession({
+                region,
+                userId: credentials.userId,
+                token: credentials.token,
+                log: {
+                    info: (message) => this.log.info(`Gree cloud: ${message}`),
+                    warn: (message) => this.log.warn(`Gree cloud: ${message}`),
+                    debug: (message) => this.log.debug(`Gree cloud: ${message}`),
+                },
+                renew: () => api.login(),
+            });
+            this.cloudSession = session;
+            session.start();
+            for (const mac of configured) {
+                const record = devices.find((item) => item.mac.toLowerCase() === mac);
+                if (!record) {
+                    this.log.warn(`Device ${mac} is set to cloud control but is not in the Gree+ cloud account`);
+                    continue;
+                }
+                try {
+                    this.registerCloudDevice(record);
+                }
+                catch (err) {
+                    this.log.warn(`Device ${mac} could not be registered for cloud control: ${err?.message ?? 'unknown error'}`);
+                }
+            }
+            this.cloudRetryDelay = 60;
+        }
+        catch (err) {
+            if (session) {
+                try {
+                    session.stop();
+                }
+                catch {
+                    // ignore, the session is discarded anyway
+                }
+                if (this.cloudSession === session) {
+                    this.cloudSession = undefined;
+                }
+            }
+            const reason = err instanceof Error ? err.message : 'unknown error';
+            this.log.warn(`Gree cloud start failed (${reason}), retrying in ${this.cloudRetryDelay} seconds`);
+            if (!this.cloudStopped) {
+                this.cloudRetryTimer = setTimeout(() => {
+                    this.cloudRetryTimer = undefined;
+                    this.startCloud();
+                }, this.cloudRetryDelay * 1000);
+                this.cloudRetryDelay = Math.min(this.cloudRetryDelay * 2, 1800);
+            }
+        }
+    }
+    registerCloudDevice(record) {
+        const mac = record.mac.toLowerCase();
+        if (typeof record.key !== 'string' || record.key.length !== 16) {
+            this.log.warn(`Device ${mac} has no usable cloud key`);
+            return;
+        }
+        this.cloudKeys[mac] = record.key;
+        this.registerDevice({
+            mac,
+            name: record.name,
+            address: 'cloud',
+            port: 0,
+            encryptionVersion: 1,
+            brand: 'gree',
+            model: 'gree',
+            ver: record.version,
+            cloud: true,
         });
     }
     /**
@@ -318,6 +451,10 @@ export class GreeACPlatform {
     registerDevice = (deviceInfo) => {
         this.log.debug('registerDevice - deviceInfo:', JSON.stringify(deviceInfo));
         const devcfg = this.config.devices?.find((item) => item.mac === deviceInfo.mac) || { mac: deviceInfo.mac };
+        if (devcfg.cloudControl === true && deviceInfo.cloud !== true) {
+            this.log.debug(`registerDevice - ${deviceInfo.mac} is cloud controlled, local registration skipped`);
+            return;
+        }
         const deviceConfig = {
             // parameters read from config
             ...devcfg,
@@ -565,6 +702,35 @@ export class GreeACPlatform {
             // load heatercooler accessory
             const acsocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
             const ac = new GreeAirConditioner(this, accessory, deviceConfig, accessory_ts?.context.device.mac, acsocket);
+            if (deviceInfo.cloud === true) {
+                // cloud controlled device: no UDP socket is bound and no bind request is sent (the socket stays unused)
+                const key = this.cloudKeys[deviceInfo.mac];
+                const session = this.cloudSession;
+                if (!key || !session) {
+                    this.log.warn(`[${ac.getDeviceLabel()}] Cloud session is not available`);
+                    return;
+                }
+                ac.key = key;
+                ac.cloudSend = (pack, tag) => session.publish(deviceInfo.mac, pack, tag);
+                session.registerDevice(deviceInfo.mac, key, (pack) => {
+                    try {
+                        ac.processPack(pack);
+                    }
+                    catch (err) {
+                        this.log.warn(`[${ac.getDeviceLabel()}] Warning: cloud package could not be processed`);
+                        this.log.debug(`[${ac.getDeviceLabel()}] cloud package error:`, err?.message);
+                    }
+                });
+                ac.accessory.bound = true;
+                ac.initAccessory();
+                this.log.success(`[${ac.getDeviceLabel()}] Device is bound through the Gree cloud -> ${deviceInfo.mac}`);
+                ac.requestDeviceStatus();
+                // the cloud connection is usually not ready yet when the first request is made -> ask again shortly after start
+                setTimeout(ac.requestDeviceStatus.bind(ac), 5000);
+                setTimeout(ac.requestDeviceStatus.bind(ac), 12000);
+                setInterval(ac.requestDeviceStatus.bind(ac), Math.max(ac.deviceConfig.statusUpdateInterval, CLOUD_MIN_STATUS_INTERVAL) * 1000);
+                return;
+            }
             acsocket.on('error', (err) => {
                 this.log.error(`[${ac.getDeviceLabel()}] Network - Error:`, err.message);
             });

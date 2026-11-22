@@ -32,10 +32,15 @@ export function formatDeviceLine(device) {
         `key=${device.key ? 'present' : 'missing'}`,
     ].join(' | ');
 }
-async function readStatus(api, region, login, mac) {
+// exported with an injectable session factory so the failure paths can be tested without a network
+export async function readStatus(api, region, login, mac, createSession = (options) => new CloudSession(options)) {
     const device = (await api.getAllDevices()).find((d) => d.mac.toLowerCase() === mac.toLowerCase());
     if (!device) {
         console.log(`Probe failed: device ${mac} is not in this account`);
+        return 1;
+    }
+    if (typeof device.key !== 'string' || device.key.length !== 16) {
+        console.log(`Probe failed: device ${mac} has no usable key`);
         return 1;
     }
     return new Promise((resolve) => {
@@ -49,7 +54,7 @@ async function readStatus(api, region, login, mac) {
             resolve(code);
         };
         try {
-            session = new CloudSession({ region, userId: login.userId, token: login.token, renew: () => api.login() });
+            session = createSession({ region, userId: login.userId, token: login.token, renew: () => api.login() });
         }
         catch (err) {
             finish(1, `Probe failed: ${err instanceof Error ? err.message : 'unknown error'}`);
@@ -73,7 +78,12 @@ async function readStatus(api, region, login, mac) {
             if (active.connected) {
                 clearInterval(timers.poll);
                 console.log(`Connected to ${GREE_MQTT_SERVERS[region]}.`);
-                active.send(device.mac, { t: 'status', cols: STATUS_COLS });
+                try {
+                    active.send(device.mac, { t: 'status', cols: STATUS_COLS });
+                }
+                catch {
+                    finish(1, 'Probe failed: could not send the status request');
+                }
             }
         }, 100);
     });

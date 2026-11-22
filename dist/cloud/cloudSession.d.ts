@@ -15,6 +15,7 @@ export declare function buildEnvelope(mac: string, pack: string, userId: number,
 export declare function topicsFor(mac: string): string[];
 export declare function requestTopic(mac: string): string;
 export declare function macFromTopic(topic: string): string | undefined;
+export declare function redactSecrets(text: string, secrets: string[]): string;
 export declare function randomCid(): string;
 export declare function randomClientId(): string;
 export interface MqttClientLike {
@@ -39,9 +40,11 @@ export declare class CloudSession {
     private readonly log?;
     private readonly connectFn;
     private readonly renew?;
+    private readonly now;
     private readonly devices;
     private userId;
     private token;
+    private previousToken?;
     private client?;
     private started;
     private stopped;
@@ -49,6 +52,10 @@ export declare class CloudSession {
     private closeCount;
     private renewing;
     private renewTimer?;
+    private fallbackTimer?;
+    private lastRenewAttemptAt?;
+    private renewFailures;
+    private lastErrorMessage?;
     constructor(options: {
         region: string;
         userId: number;
@@ -59,6 +66,7 @@ export declare class CloudSession {
             userId: number;
             token: string;
         }>;
+        now?: () => number;
     });
     get connected(): boolean;
     start(): void;
@@ -69,6 +77,11 @@ export declare class CloudSession {
     private openClient;
     private subscribeDevice;
     private handleMessage;
+    private redact;
+    private scheduleFallback;
     private startRenewal;
+    private scheduleRenewal;
     private attemptRenewal;
+    private applyCredentials;
+    private renewalFailed;
 }
