@@ -72,4 +72,9 @@ export declare const DEF_SCAN_INTERVAL = 60;
 export declare const BINDING_TIMEOUT = 29000;
 export declare const DRY_RETRY_INTERVAL = 3000;
 export declare const DRY_MAX_RESENDS = 2;
+export interface CloudConfig {
+    username?: string;
+    password?: string;
+    region?: string;
+}
 export {};
