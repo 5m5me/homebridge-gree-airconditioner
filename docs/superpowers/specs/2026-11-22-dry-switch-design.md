@@ -41,7 +41,13 @@ Definitions: "dry active" means the unit reports power on and mode dry (Mod = 2)
 | Unit put in dry by remote or Gree+ | Dry switch shows on at the next status update (about 10 s). |
 | Unit leaves dry by any route | Dry switch shows off at the next status update. |
 
-Switch state is always derived from the unit's reported status, never stored.
+Switch state is derived from the unit's reported status. The one exception is
+the short window while a dry request is waiting for confirmation: during it the
+switch shows the requested state, and it is set to the unit's real state when
+the request is confirmed or given up.
+
+A Heater-Cooler "off" that arrives while a dry-on request is still waiting for
+confirmation cancels that request and powers the unit off once dry has landed.
 
 ## Confirm and resend
 

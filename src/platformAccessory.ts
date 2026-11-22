@@ -322,7 +322,7 @@ export class GreeAirConditioner {
     if (powerValue) {
       // the user wants heating / cooling -> a pending dry request must not fight it
       this.stopDryRetry();
-    } else if (this.Dry && isDryActive(this.power, this.mode)) {
+    } else if (this.Dry && (isDryActive(this.power, this.mode) || this.dryDesired === true)) {
       // "off" while the device is running in dry mode -> power the device off
       this.requestDry(false);
       return;
@@ -1536,8 +1536,9 @@ export class GreeAirConditioner {
     }
     // Dry switch (not updated while a dry request is waiting for confirmation)
     if (this.Dry && (props.includes(commands.power.code) || props.includes(commands.mode.code)) &&
-      this.dryDesired !== undefined && isDryActive(this.power, this.mode) === this.dryDesired) {
-      // the device confirmed the dry request -> stop the retry so it can not fight a later change made on the device
+      this.dryDesired === true && isDryActive(this.power, this.mode)) {
+      // the device confirmed dry on -> stop the retry so it can not fight a later change made on the device
+      // (dry off is left to the timer: an old status showing "not dry" must not cancel an off that is still needed)
       this.stopDryRetry();
     }
     if (this.Dry && this.dryDesired === undefined && (props.includes(commands.power.code) || props.includes(commands.mode.code))) {
