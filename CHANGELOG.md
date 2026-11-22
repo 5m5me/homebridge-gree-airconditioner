@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.4.0-cloud.1] - 2026-11-22
+
+- Cloud control for cloud-only units: set "cloudControl" on a device to control it through the Gree+ cloud account
+- Cloud session recovery and sign-in back-off: a failed cloud sign-in is retried with increasing delay and never affects local units
+
 ## [2.3.3-dry.3] - 2026-11-22
 
 - New cloud messaging session (MQTT over TLS) that carries encrypted status requests and commands to a cloud-only unit. Not used by the plugin yet

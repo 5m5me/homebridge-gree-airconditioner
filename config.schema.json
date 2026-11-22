@@ -321,6 +321,9 @@
             "dryControlEnabled": {
               "type": "boolean"
             },
+            "cloudControl": {
+              "type": "boolean"
+            },
             "silentTimeRange": {
               "type": "string",
               "required": false,
@@ -568,6 +571,15 @@
               "flex": "1 1 50%",
               "title": "Dry control enabled",
               "description": "If checked, a Dry switch is added to the device in Home App and dry mode support is enabled",
+              "condition": {
+                "functionBody": "return (model.devices && model.devices[arrayIndices] && model.devices[arrayIndices].mac && /^([a-f0-9]{12}|default|[a-f0-9]+@[a-f0-9]{12})$/.test(model.devices[arrayIndices].mac) && model.devices[arrayIndices].disabled !== true);"
+              }
+            },
+            {
+              "key": "devices[].cloudControl",
+              "flex": "1 1 50%",
+              "title": "Control through Gree cloud",
+              "description": "For cloud-only units which do not answer on the local network. Requires the Gree+ cloud account above",
               "condition": {
                 "functionBody": "return (model.devices && model.devices[arrayIndices] && model.devices[arrayIndices].mac && /^([a-f0-9]{12}|default|[a-f0-9]+@[a-f0-9]{12})$/.test(model.devices[arrayIndices].mac) && model.devices[arrayIndices].disabled !== true);"
               }

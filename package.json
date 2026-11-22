@@ -2,7 +2,7 @@
   "name": "homebridge-gree-ac",
   "displayName": "GREE Air Conditioner",
   "type": "module",
-  "version": "2.3.3-dry.3",
+  "version": "2.4.0-cloud.1",
   "private": false,
   "description": "Control GREE Air Conditioners from Homebridge",
   "author": "Peter Eiben",
