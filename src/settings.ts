@@ -54,6 +54,7 @@ export interface DeviceConfig {
   port?: number;
   ip?: string;
   fanControlEnabled?: boolean;
+  dryControlEnabled?: boolean;
   silentTimeRange?: string;
 }
 
@@ -138,3 +139,6 @@ export const TEMPERATURE_TABLE: { [key: string]: number } = {
 export const DEF_SCAN_INTERVAL = 60; // seconds
 
 export const BINDING_TIMEOUT = 29000; // milliseconds
+
+export const DRY_RETRY_INTERVAL = 3000; // milliseconds between dry command confirmation checks
+export const DRY_MAX_RESENDS = 2; // how many times a dry command is resent if the device does not confirm it

@@ -3,11 +3,13 @@ import type { CharacteristicValue, Service } from 'homebridge';
 
 import type { GreeACPlatform, MyPlatformAccessory } from './platform.js';
 import { PLATFORM_NAME, PLUGIN_NAME, DeviceConfig, TEMPERATURE_TABLE, MODIFY_VERTICAL_SWING_POSITION, TS_TYPE,
-  TEMPERATURE_LIMITS, DEFAULT_DEVICE_CONFIG } from './settings.js';
+  TEMPERATURE_LIMITS, DEFAULT_DEVICE_CONFIG, DRY_RETRY_INTERVAL, DRY_MAX_RESENDS } from './settings.js';
 import { GreeAirConditionerTS } from './tsAccessory.js';
 import crypto from './crypto.js';
 import type { CommandValueMap, Commands } from './commands.js';
 import commands from './commands.js';
+import type { DryState } from './dryControl.js';
+import { isDryActive, buildDryCommand, nextRetryAction } from './dryControl.js';
 
 /**
  * Platform Accessory
@@ -18,6 +20,10 @@ export class GreeAirConditioner {
   private HeaterCooler?: Service;
   private TemperatureSensor?: Service;
   private Fan?: Service;
+  private Dry?: Service;
+  private dryDesired?: boolean;
+  private dryResends = 0;
+  private dryTimer?: ReturnType<typeof setInterval>;
   public key?: string;
   private cols?: Array<string>;
   private status: { [key: string]: unknown };
@@ -209,9 +215,31 @@ export class GreeAirConditioner {
       }
     }
 
+    // Dry switch service
+    // subtype is used because other plugins or future versions may add more Switch services
+    const ds = this.accessory.getServiceById(this.platform.Service.Switch, 'dry');
+    if (this.deviceConfig.dryControlEnabled) {
+      if (ds) {
+        this.Dry = ds;
+      } else {
+        this.platform.log.debug(`[${this.getDeviceLabel()}] Add Dry child service`);
+        this.Dry = this.accessory.addService(this.platform.Service.Switch, 'Dry ' + this.HeaterCooler.displayName, 'dry');
+        this.Dry.addOptionalCharacteristic(this.platform.Characteristic.ConfiguredName);
+        this.Dry.setCharacteristic(this.platform.Characteristic.ConfiguredName, 'Dry');
+      }
+    } else {
+      this.platform.log.debug(`[${this.getDeviceLabel()}] Dry child service not allowed`,
+        ds?.displayName !== undefined ? '(' + ds?.displayName + ')' : '');
+      if (ds !== undefined) {
+        this.platform.log.debug(`[${this.getDeviceLabel()}] Remove Dry child service (%s)`, ds.displayName);
+        this.accessory.removeService(ds);
+      }
+    }
+
     this.HeaterCooler.setPrimaryService(true);
     this.TemperatureSensor?.setPrimaryService(false);
     this.Fan?.setPrimaryService(false);
+    this.Dry?.setPrimaryService(false);
 
     this.platform.api.updatePlatformAccessories([this.accessory]);
 
@@ -225,6 +253,9 @@ export class GreeAirConditioner {
     this.Fan?.getCharacteristic(this.platform.Characteristic.Active)
       .onSet(this.setFanActive.bind(this))
       .onGet(this.getFanActive.bind(this));
+    this.Dry?.getCharacteristic(this.platform.Characteristic.On)
+      .onSet(this.setDryOn.bind(this))
+      .onGet(this.getDryOn.bind(this));
 
     // register handlers for the Current Heater-Cooler State Characteristic
     this.HeaterCooler.getCharacteristic(this.platform.Characteristic.CurrentHeaterCoolerState)
@@ -288,6 +319,14 @@ export class GreeAirConditioner {
   async setActive(value: CharacteristicValue) {
     const powerValue = (value === this.platform.Characteristic.Active.ACTIVE);
     this.platform.log.debug(`[${this.getDeviceLabel()}] Set Heater-Cooler Active ->`, powerValue ? 'ACTIVE' : 'INACTIVE');
+    if (powerValue) {
+      // the user wants heating / cooling -> a pending dry request must not fight it
+      this.stopDryRetry();
+    } else if (this.Dry && isDryActive(this.power, this.mode)) {
+      // "off" while the device is running in dry mode -> power the device off
+      this.requestDry(false);
+      return;
+    }
     this.power = powerValue;
     if (powerValue &&
       this.Fan?.getCharacteristic(this.platform.Characteristic.Active).value === this.platform.Characteristic.Active.ACTIVE) {
@@ -298,6 +337,9 @@ export class GreeAirConditioner {
   async setFanActive(value: CharacteristicValue) {
     const powerValue = (value === this.platform.Characteristic.Active.ACTIVE);
     this.platform.log.debug(`[${this.getDeviceLabel()}] Set Fan Active ->`, powerValue ? 'ACTIVE' : 'INACTIVE');
+    if (powerValue) {
+      this.stopDryRetry();
+    }
     this.fanpower = powerValue;
     if (powerValue &&
       this.HeaterCooler?.getCharacteristic(this.platform.Characteristic.Active).value === this.platform.Characteristic.Active.ACTIVE) {
@@ -305,7 +347,86 @@ export class GreeAirConditioner {
     }
   }
 
+  async setDryOn(value: CharacteristicValue) {
+    const desiredOn = (value === true);
+    this.platform.log.debug(`[${this.getDeviceLabel()}] Set Dry On ->`, desiredOn);
+    this.requestDry(desiredOn);
+    if (desiredOn) {
+      if (this.HeaterCooler?.getCharacteristic(this.platform.Characteristic.Active).value === this.platform.Characteristic.Active.ACTIVE) {
+        this.HeaterCooler?.getCharacteristic(this.platform.Characteristic.Active).updateValue(this.platform.Characteristic.Active.INACTIVE);
+      }
+      if (this.Fan?.getCharacteristic(this.platform.Characteristic.Active).value === this.platform.Characteristic.Active.ACTIVE) {
+        this.Fan?.getCharacteristic(this.platform.Characteristic.Active).updateValue(this.platform.Characteristic.Active.INACTIVE);
+      }
+    }
+  }
+
+  async getDryOn(): Promise<CharacteristicValue> {
+    const dryOn = this.dryDesired !== undefined ? this.dryDesired : isDryActive(this.power, this.mode);
+    this.platform.log.debug(`[${this.getDeviceLabel()}] Get Dry On ->`, dryOn);
+    return dryOn;
+  }
+
+  private getDryState(): DryState {
+    return {
+      power: this.power,
+      mode: this.mode,
+      xFanEnabled: this.deviceConfig.xFanEnabled === true,
+      xFanOn: (this.status[commands.xFan.code] || commands.xFan.value.off) === commands.xFan.value.on,
+    };
+  }
+
+  // records the desired dry state, sends the command and starts the confirmation timer
+  private requestDry(desiredOn: boolean) {
+    this.stopDryRetry();
+    this.dryDesired = desiredOn;
+    this.sendDryCommand();
+    this.dryTimer = setInterval(this.checkDry.bind(this), DRY_RETRY_INTERVAL);
+  }
+
+  private sendDryCommand() {
+    if (this.dryDesired === undefined) {
+      return;
+    }
+    const command = buildDryCommand(this.dryDesired, this.getDryState());
+    if (command === null) {
+      this.platform.log.debug(`[${this.getDeviceLabel()}] dry -> no change`);
+      return;
+    }
+    this.platform.log.info(`[${this.getDeviceLabel()}] dry -> ${this.dryDesired ? 'on' : 'off'} %j`, command);
+    this.sendCommand(command);
+  }
+
+  private checkDry() {
+    if (this.dryDesired === undefined) {
+      this.stopDryRetry();
+      return;
+    }
+    const action = nextRetryAction(this.dryDesired, this.getDryState(), this.dryResends, DRY_MAX_RESENDS);
+    if (action === 'resend') {
+      this.dryResends++;
+      this.platform.log.debug(`[${this.getDeviceLabel()}] dry -> not confirmed, resend ${this.dryResends}/${DRY_MAX_RESENDS}`);
+      this.sendDryCommand();
+      return;
+    }
+    if (action === 'giveUp') {
+      this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: dry ${this.dryDesired ? 'on' : 'off'} was not confirmed by the device`);
+    }
+    this.stopDryRetry();
+    this.Dry?.getCharacteristic(this.platform.Characteristic.On).updateValue(isDryActive(this.power, this.mode));
+  }
+
+  private stopDryRetry() {
+    if (this.dryTimer !== undefined) {
+      clearInterval(this.dryTimer);
+      this.dryTimer = undefined;
+    }
+    this.dryDesired = undefined;
+    this.dryResends = 0;
+  }
+
   async setTargetHeaterCoolerState(value: CharacteristicValue) {
+    this.stopDryRetry();
     let modeValue = commands.mode.value.auto;
     let logValue = 'AUTO';
     switch (value) {
@@ -1412,6 +1533,12 @@ export class GreeAirConditioner {
       this.platform.log.debug(`[${this.getDeviceLabel()}] updateStatus (Fan Active) ->`, fanActive ? 'ACTIVE' : 'INACTIVE');
       this.Fan?.getCharacteristic(this.platform.Characteristic.Active)
         .updateValue(fanActive ? this.platform.Characteristic.Active.ACTIVE : this.platform.Characteristic.Active.INACTIVE);
+    }
+    // Dry switch (not updated while a dry request is waiting for confirmation)
+    if (this.Dry && this.dryDesired === undefined && (props.includes(commands.power.code) || props.includes(commands.mode.code))) {
+      const dryActive = isDryActive(this.power, this.mode);
+      this.platform.log.debug(`[${this.getDeviceLabel()}] updateStatus (Dry On) ->`, dryActive);
+      this.Dry.getCharacteristic(this.platform.Characteristic.On).updateValue(dryActive);
     }
     // Current Heater-Cooler State
     if (props.includes(commands.mode.code)) {
