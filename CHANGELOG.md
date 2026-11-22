@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.3-dry.2] - 2026-11-22
+
+- New optional "cloud" settings (username, password, region) for a Gree+ cloud account, for cloud-only units. Not used to control units yet
+- New probe command (dist/cloud/cloudProbe.js) that lists the devices a Gree+ cloud account can see, without printing secrets
+
 ## [2.3.3-dry.1] - 2026-11-22
 
 Fork release (5m5me), based on v2.3.2.
