@@ -1,8 +1,25 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { DEFAULT_CLOUD_REGION, GreeCloudApi } from './cloudApi.js';
+import { CloudSession, GREE_MQTT_SERVERS } from './cloudSession.js';
 import { PLATFORM_NAME } from '../settings.js';
 const DEFAULT_CONFIG_PATH = '/var/lib/homebridge/config.json';
+const STATUS_COLS = ['Pow', 'Mod', 'SetTem', 'TemSen', 'WdSpd', 'Blo', 'TemUn', 'SwUpDn', 'Quiet', 'Tur', 'Lig'];
+const STATUS_TIMEOUT_MS = 20_000;
+export function parseProbeArgs(argv) {
+    let configPath;
+    let statusMac;
+    for (let i = 0; i < argv.length; i++) {
+        if (argv[i] === '--status') {
+            statusMac = argv[i + 1];
+            i++;
+        }
+        else if (!argv[i].startsWith('--') && configPath === undefined) {
+            configPath = argv[i];
+        }
+    }
+    return { configPath: configPath || DEFAULT_CONFIG_PATH, statusMac };
+}
 export function formatDeviceLine(device) {
     return [
         device.name,
@@ -15,8 +32,54 @@ export function formatDeviceLine(device) {
         `key=${device.key ? 'present' : 'missing'}`,
     ].join(' | ');
 }
+async function readStatus(api, region, login, mac) {
+    const device = (await api.getAllDevices()).find((d) => d.mac.toLowerCase() === mac.toLowerCase());
+    if (!device) {
+        console.log(`Probe failed: device ${mac} is not in this account`);
+        return 1;
+    }
+    return new Promise((resolve) => {
+        let session;
+        const timers = {};
+        const finish = (code, line) => {
+            clearTimeout(timers.timeout);
+            clearInterval(timers.poll);
+            session?.stop();
+            console.log(line);
+            resolve(code);
+        };
+        try {
+            session = new CloudSession({ region, userId: login.userId, token: login.token, renew: () => api.login() });
+        }
+        catch (err) {
+            finish(1, `Probe failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+            return;
+        }
+        const active = session;
+        active.registerDevice(device.mac, device.key, (pack) => {
+            if (pack.t !== 'dat' || !Array.isArray(pack.cols) || !Array.isArray(pack.dat)) {
+                return;
+            }
+            const values = {};
+            pack.cols.forEach((col, index) => {
+                values[String(col)] = pack.dat[index];
+            });
+            finish(0, `Status: ${JSON.stringify(values)}`);
+        });
+        timers.timeout = setTimeout(() => finish(1, 'Probe failed: no status reply within 20 seconds'), STATUS_TIMEOUT_MS);
+        active.start();
+        // the session has no connect callback, so poll the connected flag until the status request has been sent
+        timers.poll = setInterval(() => {
+            if (active.connected) {
+                clearInterval(timers.poll);
+                console.log(`Connected to ${GREE_MQTT_SERVERS[region]}.`);
+                active.send(device.mac, { t: 'status', cols: STATUS_COLS });
+            }
+        }, 100);
+    });
+}
 async function main() {
-    const configPath = process.argv[2] || DEFAULT_CONFIG_PATH;
+    const { configPath, statusMac } = parseProbeArgs(process.argv.slice(2));
     let cloud;
     try {
         const config = JSON.parse(readFileSync(configPath, 'utf8'));
@@ -44,8 +107,11 @@ async function main() {
     try {
         const region = cloud.region || DEFAULT_CLOUD_REGION;
         const api = new GreeCloudApi(region, cloud.username, cloud.password);
-        await api.login();
+        const login = await api.login();
         console.log(`Signed in. Region: ${region}.`);
+        if (statusMac) {
+            return await readStatus(api, region, login, statusMac);
+        }
         let total = 0;
         for (const home of await api.getHomes()) {
             const devices = await api.getDevices(home.id);
