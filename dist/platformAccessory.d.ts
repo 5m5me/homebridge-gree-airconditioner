@@ -22,6 +22,7 @@ export declare class GreeAirConditioner {
     private dryResends;
     private dryTimer?;
     key?: string;
+    lastResponseAt: number;
     cloudSend?: (pack: string, tag?: string) => boolean;
     private cols?;
     private status;

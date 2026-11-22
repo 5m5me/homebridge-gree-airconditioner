@@ -30,6 +30,12 @@ export declare class GreeACPlatform implements DynamicPlatformPlugin {
     private cloudRetryTimer?;
     private cloudRetryDelay;
     private cloudStopped;
+    private stopped;
+    private acs;
+    private startedAt;
+    private lastSweepAt;
+    private sweepTimers;
+    private lostLogged;
     constructor(log: Logging, config: PlatformConfig, api: API);
     /**
      * Gree cloud control: signs in once, opens one cloud session and registers the configured cloudControl devices.
@@ -57,6 +63,20 @@ export declare class GreeACPlatform implements DynamicPlatformPlugin {
     }) => void;
     checkBindingStatus(bindNo: number, address: string, port: number, encryptionVersion: number, mac: string): void;
     registerDevice: (deviceInfo: any) => void;
+    /**
+     * Adds the last known address of a cached local accessory to the unicast discovery targets.
+     * Never throws.
+     */
+    private addCachedAddress;
+    /**
+     * Looks for configured local devices that stopped answering and sends discovery packets to every host address
+     * in the /24 of their last known address. Called from the repeating scan only. Never throws.
+     */
+    private sweepForLostDevices;
+    /**
+     * Sends the discovery message to every host address of the /24 in small batches. Never throws.
+     */
+    private startSweep;
     sendScan(): void;
     sendEncryptedMessage(message: unknown, mac: string, address: string, port: number, encryptionVersion: number, key?: string): void;
     getNetworkAddresses(bindInterfaces: any): Record<string, string>;

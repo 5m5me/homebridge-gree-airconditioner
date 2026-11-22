@@ -79,4 +79,8 @@ export interface CloudConfig {
     region?: string;
 }
 export declare const CLOUD_MIN_STATUS_INTERVAL = 30;
+export declare const LOST_AFTER = 90;
+export declare const SWEEP_MIN_INTERVAL = 300;
+export declare const SWEEP_BATCH_SIZE = 16;
+export declare const SWEEP_BATCH_DELAY = 50;
 export {};
