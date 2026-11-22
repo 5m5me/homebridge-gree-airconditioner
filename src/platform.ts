@@ -696,6 +696,9 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
       this.log.info(`Device [${accessory.displayName} - ${accessory.context.device.mac}] address has changed: %s -> %s`,
         accessory.context.device.address, deviceInfo.address);
       accessory.context.device.address = deviceInfo.address;
+      if (accessory_ts) {
+        accessory_ts.context.device.address = deviceInfo.address;
+      }
       if (this.processedDevices[accessory.UUID] && accessory.bound === true) {
         try {
           this.api.updatePlatformAccessories([accessory]);
