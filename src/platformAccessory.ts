@@ -1535,6 +1535,11 @@ export class GreeAirConditioner {
         .updateValue(fanActive ? this.platform.Characteristic.Active.ACTIVE : this.platform.Characteristic.Active.INACTIVE);
     }
     // Dry switch (not updated while a dry request is waiting for confirmation)
+    if (this.Dry && (props.includes(commands.power.code) || props.includes(commands.mode.code)) &&
+      this.dryDesired !== undefined && isDryActive(this.power, this.mode) === this.dryDesired) {
+      // the device confirmed the dry request -> stop the retry so it can not fight a later change made on the device
+      this.stopDryRetry();
+    }
     if (this.Dry && this.dryDesired === undefined && (props.includes(commands.power.code) || props.includes(commands.mode.code))) {
       const dryActive = isDryActive(this.power, this.mode);
       this.platform.log.debug(`[${this.getDeviceLabel()}] updateStatus (Dry On) ->`, dryActive);

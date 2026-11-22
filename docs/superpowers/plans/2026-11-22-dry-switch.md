@@ -50,7 +50,7 @@ Expected: completes without errors.
 In `package.json`, inside `"scripts"`, add this entry after the `"lint"` line:
 
 ```json
-    "test": "npm run build && node --test test/",
+    "test": "npm run build && node --test test/*.test.mjs",
 ```
 
 - [ ] **Step 3: Write the failing tests**
