@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { PLATFORM_NAME, PLUGIN_NAME, TEMPERATURE_TABLE, MODIFY_VERTICAL_SWING_POSITION, TS_TYPE, TEMPERATURE_LIMITS, DEFAULT_DEVICE_CONFIG, DRY_RETRY_INTERVAL, DRY_MAX_RESENDS } from './settings.js';
 import { GreeAirConditionerTS } from './tsAccessory.js';
 import crypto from './crypto.js';
@@ -22,7 +23,7 @@ export class GreeAirConditioner {
     dryResends = 0;
     dryTimer;
     key;
-    // time (ms since epoch) of the last package processed from the device, 0 if none since start
+    // monotonic timestamp in milliseconds (performance.now) of the last package processed from the device, 0 if none since start
     lastResponseAt = 0;
     // set for cloud controlled devices: sends an encrypted pack through the cloud session, returns false if it could not be sent
     cloudSend;
@@ -1678,7 +1679,7 @@ export class GreeAirConditioner {
             this.platform.log.debug(`[${this.getDeviceLabel()}] processPack - package without type`);
             return;
         }
-        this.lastResponseAt = Date.now();
+        this.lastResponseAt = performance.now();
         switch (pack.t.toLowerCase()) {
             case 'bindok': // package type is binding confirmation
                 this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: Binding response received from already bound device`);

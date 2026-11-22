@@ -36,6 +36,8 @@ export declare class GreeACPlatform implements DynamicPlatformPlugin {
     private lastSweepAt;
     private sweepTimers;
     private lostLogged;
+    private discoveryWhileLostAt;
+    private rebindWarned;
     constructor(log: Logging, config: PlatformConfig, api: API);
     /**
      * Gree cloud control: signs in once, opens one cloud session and registers the configured cloudControl devices.
@@ -68,6 +70,10 @@ export declare class GreeACPlatform implements DynamicPlatformPlugin {
      * Never throws.
      */
     private addCachedAddress;
+    /**
+     * True when the configured local device has not answered for longer than its lost threshold. now is a performance.now() value.
+     */
+    private isDeviceLost;
     /**
      * Looks for configured local devices that stopped answering and sends discovery packets to every host address
      * in the /24 of their last known address. Called from the repeating scan only. Never throws.

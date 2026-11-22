@@ -1,6 +1,7 @@
 import dgram from 'dgram';
 import crypto from './crypto.js';
 import { networkInterfaces } from 'os';
+import { performance } from 'node:perf_hooks';
 import { readFileSync } from 'fs';
 import { GreeAirConditioner } from './platformAccessory.js';
 import { GreeCloudApi, DEFAULT_CLOUD_REGION } from './cloud/cloudApi.js';
@@ -39,10 +40,12 @@ export class GreeACPlatform {
     stopped = false;
     // address search for lost local devices
     acs = {};
-    startedAt = Date.now();
+    startedAt = performance.now();
     lastSweepAt = {};
     sweepTimers = [];
     lostLogged = {};
+    discoveryWhileLostAt = {};
+    rebindWarned = {};
     // This is only required when using Custom Services and Characteristics not support by HomeKit
     //public readonly CustomServices: any;
     //public readonly CustomCharacteristics: any;
@@ -657,6 +660,17 @@ export class GreeACPlatform {
         if (accessory && deviceInfo.address !== accessory.context.device.address) {
             this.log.info(`Device [${accessory.displayName} - ${accessory.context.device.mac}] address has changed: %s -> %s`, accessory.context.device.address, deviceInfo.address);
             accessory.context.device.address = deviceInfo.address;
+            if (accessory_ts) {
+                accessory_ts.context.device.address = deviceInfo.address;
+            }
+            if (this.processedDevices[accessory.UUID] && accessory.bound === true) {
+                try {
+                    this.api.updatePlatformAccessories([accessory]);
+                }
+                catch (err) {
+                    this.log.debug('Could not save the changed address:', err?.message);
+                }
+            }
         }
         if (accessory_ts && deviceInfo.address !== accessory_ts.context.device.address) {
             accessory_ts.context.device.address = deviceInfo.address;
@@ -664,6 +678,28 @@ export class GreeACPlatform {
         if (accessory && this.processedDevices[accessory.UUID]) {
             // already initialized
             this.log.debug('registerDevice - already processed:', accessory.displayName, accessory.context.device.mac, accessory.UUID);
+            try {
+                const mac = deviceInfo.mac;
+                const cloudControlled = deviceInfo.cloud === true || deviceConfig?.cloudControl === true;
+                if (!cloudControlled && typeof mac === 'string' && !mac.includes('@')) {
+                    const now = performance.now();
+                    if (!this.isDeviceLost(mac, now)) {
+                        delete this.discoveryWhileLostAt[mac];
+                        this.rebindWarned[mac] = false;
+                    }
+                    else if (this.discoveryWhileLostAt[mac] === undefined) {
+                        this.discoveryWhileLostAt[mac] = now;
+                    }
+                    else if (now - this.discoveryWhileLostAt[mac] >= LOST_AFTER * 1000 && this.rebindWarned[mac] !== true) {
+                        this.rebindWarned[mac] = true;
+                        this.log.warn(`Device ${mac} answers discovery at ${deviceInfo.address} but not status requests. ` +
+                            'Restart the Gree child bridge to pair with it again.');
+                    }
+                }
+            }
+            catch (err) {
+                this.log.debug('Lost device check failed:', err?.message);
+            }
             return;
         }
         // create heatercooler accessory if not loaded from cache
@@ -811,6 +847,19 @@ export class GreeACPlatform {
         }
     }
     /**
+     * True when the configured local device has not answered for longer than its lost threshold. now is a performance.now() value.
+     */
+    isDeviceLost(mac, now) {
+        const configured = (Array.isArray(this.config.devices) ? this.config.devices : []);
+        const item = configured.find((entry) => typeof entry?.mac === 'string' && entry.mac === mac);
+        const defaultItem = configured.find((entry) => typeof entry?.mac === 'string' && entry.mac.toLowerCase() === 'default' && entry.disabled !== true);
+        const lastResponseAt = this.acs[mac]?.lastResponseAt ?? 0;
+        // same value the unit polls with: its handler's effective config, else config item, else default device, else plugin default
+        const interval = this.acs[mac]?.deviceConfig?.statusUpdateInterval ?? item?.statusUpdateInterval ?? defaultItem?.statusUpdateInterval ??
+            DEFAULT_DEVICE_CONFIG.statusUpdateInterval;
+        return isLost(lastResponseAt, this.startedAt, now, lostAfterSeconds(interval, LOST_AFTER) * 1000);
+    }
+    /**
      * Looks for configured local devices that stopped answering and sends discovery packets to every host address
      * in the /24 of their last known address. Called from the repeating scan only. Never throws.
      */
@@ -819,24 +868,21 @@ export class GreeACPlatform {
             return;
         }
         try {
-            const now = Date.now();
+            const now = performance.now();
             const configured = (Array.isArray(this.config.devices) ? this.config.devices : []);
-            const defaultItem = configured.find((item) => typeof item?.mac === 'string' && item.mac.toLowerCase() === 'default' && item.disabled !== true);
             const prefixes = {};
             configured.forEach((item) => {
                 if (item?.disabled === true || item?.cloudControl === true || typeof item?.mac !== 'string' || !/^[a-f0-9]{12}$/.test(item.mac)) {
                     return;
                 }
                 const mac = item.mac;
-                const lastResponseAt = this.acs[mac]?.lastResponseAt ?? 0;
-                // same value the unit polls with: its handler's effective config, else config item, else default device, else plugin default
-                const interval = this.acs[mac]?.deviceConfig?.statusUpdateInterval ?? item.statusUpdateInterval ?? defaultItem?.statusUpdateInterval ??
-                    DEFAULT_DEVICE_CONFIG.statusUpdateInterval;
-                if (!isLost(lastResponseAt, this.startedAt, now, lostAfterSeconds(interval, LOST_AFTER) * 1000)) {
+                if (!this.isDeviceLost(mac, now)) {
                     if (this.lostLogged[mac]) {
                         this.lostLogged[mac] = false;
                         this.log.info(`Device ${mac} is answering again`);
                     }
+                    delete this.discoveryWhileLostAt[mac];
+                    this.rebindWarned[mac] = false;
                     return;
                 }
                 const known = this.devices[mac]?.context?.device?.address;

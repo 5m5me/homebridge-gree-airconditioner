@@ -18,8 +18,9 @@ export function isPrivateIPv4(address) {
 }
 // seconds without an answer after which a unit counts as lost: at least minSeconds, and at least three status polls
 export function lostAfterSeconds(statusUpdateInterval, minSeconds) {
-    if (typeof statusUpdateInterval === 'number' && Number.isFinite(statusUpdateInterval) && statusUpdateInterval > 0) {
-        return Math.max(minSeconds, 3 * statusUpdateInterval);
+    const interval = typeof statusUpdateInterval === 'string' && statusUpdateInterval !== '' ? Number(statusUpdateInterval) : statusUpdateInterval;
+    if (typeof interval === 'number' && Number.isFinite(interval) && interval > 0) {
+        return Math.max(minSeconds, 3 * interval);
     }
     return minSeconds;
 }
