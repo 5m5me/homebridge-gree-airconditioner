@@ -30,7 +30,9 @@ async function main(): Promise<number> {
     }
     cloud = platform.cloud as CloudConfig | undefined;
   } catch (err) {
-    console.log(`Probe failed: ${err instanceof Error ? err.message : 'could not read the config'}`);
+    // the error text is not printed: a JSON parse error can quote part of the config file, which holds the password
+    const code = (err as { code?: string }).code;
+    console.log(`Probe failed: could not read the config file${code ? ` (${code})` : ' (not valid JSON)'}`);
     return 1;
   }
   if (!cloud?.username) {
