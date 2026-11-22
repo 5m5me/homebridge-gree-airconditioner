@@ -1894,6 +1894,9 @@ export class GreeAirConditioner {
     if (this.cloudSend) {
       if (!this.cloudSend(pack, tag === '' ? undefined : tag)) {
         this.platform.log.debug(`[${this.getDeviceLabel()}] sendMessage - not sent, the Gree cloud connection is not ready`);
+        // nothing was sent, so no reply will come: do not leave power / mode changes blocked as pending
+        this.powerPending = -1;
+        this.modePending = -1;
       }
       return;
     }

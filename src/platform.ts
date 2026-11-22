@@ -768,6 +768,9 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
         ac.initAccessory();
         this.log.success(`[${ac.getDeviceLabel()}] Device is bound through the Gree cloud -> ${deviceInfo.mac}`);
         ac.requestDeviceStatus();
+        // the cloud connection is usually not ready yet when the first request is made -> ask again shortly after start
+        setTimeout(ac.requestDeviceStatus.bind(ac), 5000);
+        setTimeout(ac.requestDeviceStatus.bind(ac), 12000);
         setInterval(ac.requestDeviceStatus.bind(ac), Math.max(ac.deviceConfig.statusUpdateInterval, CLOUD_MIN_STATUS_INTERVAL) * 1000);
         return;
       }
