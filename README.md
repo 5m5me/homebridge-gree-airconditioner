@@ -393,6 +393,14 @@ node node_modules/homebridge-gree-ac/dist/cloud/cloudProbe.js [path-to-config.js
 
 The config path defaults to `/var/lib/homebridge/config.json`. The probe lists each device with its MAC address, model, version and online state. It never prints the password, the session token or the device keys.
 
+To read the live status of one unit through the cloud messaging connection, add `--status` and the unit's MAC address (as listed by the probe):
+
+```
+node node_modules/homebridge-gree-ac/dist/cloud/cloudProbe.js [path-to-config.json] --status <mac>
+```
+
+The probe prints the main status values of the unit, or fails after 20 seconds if there is no reply. The connection to the Gree broker does not verify the broker certificate, because the broker uses a custom one.
+
 ### MAC Address in GREE+ mobile app
 
 Open selected device and in the upper right corner select menu symbol:
