@@ -2,7 +2,7 @@
   "name": "homebridge-gree-5m5",
   "displayName": "Gree AC (5m5)",
   "type": "module",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "description": "Control GREE Air Conditioners from Homebridge (5m5 fork with Dry switch and Gree cloud control)",
   "author": "Peter Eiben",
