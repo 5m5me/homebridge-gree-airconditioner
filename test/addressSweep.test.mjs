@@ -67,7 +67,8 @@ test('lostAfterSeconds', () => {
   assert.equal(lostAfterSeconds(10, 90), 90);
   assert.equal(lostAfterSeconds(60, 90), 180);
   assert.equal(lostAfterSeconds(30, 90), 90);
-  for (const value of [undefined, 0, -5, NaN, '60']) {
+  assert.equal(lostAfterSeconds('60', 90), 180);
+  for (const value of ['', 'abc', undefined, null, 0, -5, NaN]) {
     assert.equal(lostAfterSeconds(value, 90), 90, String(value));
   }
 });

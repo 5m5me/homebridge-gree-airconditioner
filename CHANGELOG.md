@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1] - 2026-11-22
+
+- A changed unit address is saved straight away
+- Lost detection no longer depends on the system clock
+- A warning is logged when a unit answers discovery but not status requests
+- A status interval typed as text is handled
+
 ## [3.1.0] - 2026-11-22
 
 - Last known addresses of cached units are used for discovery at start-up
