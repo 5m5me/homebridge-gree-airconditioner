@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.1.2] - 2026-11-22
+
+- A message from a unit which cannot be read no longer stops the plugin (it is logged and ignored)
+- The accessory cache is saved only when a stored value changes, not on every status update
+
 ## [3.1.1] - 2026-11-22
 
 - A changed unit address is saved straight away
