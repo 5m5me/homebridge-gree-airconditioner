@@ -1,19 +1,19 @@
 {
-  "name": "homebridge-gree-ac",
-  "displayName": "GREE Air Conditioner",
+  "name": "homebridge-gree-5m5",
+  "displayName": "Gree AC (5m5)",
   "type": "module",
-  "version": "2.4.0-cloud.1",
-  "private": false,
-  "description": "Control GREE Air Conditioners from Homebridge",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Control GREE Air Conditioners from Homebridge (5m5 fork with Dry switch and Gree cloud control)",
   "author": "Peter Eiben",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/eibenp/homebridge-gree-airconditioner#readme",
+  "homepage": "https://github.com/5m5me/homebridge-gree-airconditioner#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/eibenp/homebridge-gree-airconditioner.git"
+    "url": "https://github.com/5m5me/homebridge-gree-airconditioner.git"
   },
   "bugs": {
-    "url": "https://github.com/eibenp/homebridge-gree-airconditioner/issues"
+    "url": "https://github.com/5m5me/homebridge-gree-airconditioner/issues"
   },
   "keywords": [
     "homebridge-plugin",

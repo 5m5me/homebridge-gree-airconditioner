@@ -7,7 +7,7 @@ export const PLATFORM_NAME = 'GREEAirConditioner';
 /**
  * This must match the name of your plugin as defined the package.json `name` property
  */
-export const PLUGIN_NAME = 'homebridge-gree-ac';
+export const PLUGIN_NAME = 'homebridge-gree-5m5';
 
 export const MODIFY_VERTICAL_SWING_POSITION = {
   never: 0,
