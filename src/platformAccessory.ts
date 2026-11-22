@@ -250,6 +250,7 @@ export class GreeAirConditioner {
     this.Dry?.setPrimaryService(false);
 
     this.platform.api.updatePlatformAccessories([this.accessory]);
+    this.lastSavedContext = contextSnapshot(this.accessory.context); // baseline for saveContextIfChanged
 
     // each service must implement at-minimum the "required characteristics" for the given service type
     // see https://developers.homebridge.io/#/service/HeaterCooler
@@ -451,6 +452,7 @@ export class GreeAirConditioner {
     this.mode = modeValue;
     this.accessory.context.TargetHeaterCoolerState = value;
     this.platform.api.updatePlatformAccessories([this.accessory]);
+    this.lastSavedContext = contextSnapshot(this.accessory.context); // baseline for saveContextIfChanged
   }
 
   async setTargetTemperature(value: CharacteristicValue) {
@@ -549,6 +551,7 @@ export class GreeAirConditioner {
     }
     this.accessory.context.HeaterCoolerRotationSpeed = value;
     this.platform.api.updatePlatformAccessories([this.accessory]);
+    this.lastSavedContext = contextSnapshot(this.accessory.context); // baseline for saveContextIfChanged
   }
 
   async setFanRotationSpeed(value: CharacteristicValue) {
@@ -1764,7 +1767,7 @@ export class GreeAirConditioner {
 
   handleMessage = (msg: Buffer, rinfo: {address: string, family: string, port: number, size: number}) => {
     // a stage is tracked so the warning can say whether reading or processing failed
-    let stage = 'reading or decrypting the message';
+    let stage = 'reading';
     try {
       if (this.accessory.context.device.address === rinfo.address) {
         this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage -> %s`, msg.toString());
@@ -1787,16 +1790,17 @@ export class GreeAirConditioner {
           return;
         }
         this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Package -> %j`, pack);
-        stage = 'processing the message';
+        stage = 'processing';
         this.processPack(pack);
       }
     } catch (err) {
       try {
-        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Error while ${stage}: %s`, (err as Error)?.message);
+        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Error while ${stage} a message: %s`, (err as Error)?.message);
         const now = performance.now();
         if (this.lastUnreadableWarningAt === undefined || now - this.lastUnreadableWarningAt >= 60000) {
           this.lastUnreadableWarningAt = now;
-          this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: a message from the device could not be read (${stage} failed)`);
+          this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: a message from the device could not be ` +
+            (stage === 'reading' ? 'read or decrypted' : 'processed'));
         }
       } catch {
         // nothing may escape a UDP message handler

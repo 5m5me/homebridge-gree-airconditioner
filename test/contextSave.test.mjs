@@ -33,3 +33,8 @@ test('a circular context gives an empty string without throwing', () => {
   ctx.self = ctx;
   assert.equal(contextSnapshot(ctx), '');
 });
+
+test('an empty current snapshot always counts as changed', () => {
+  assert.equal(contextChanged('', ''), true);
+  assert.equal(contextChanged('{"a":1}', ''), true);
+});

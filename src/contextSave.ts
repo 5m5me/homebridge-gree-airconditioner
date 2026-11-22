@@ -27,7 +27,7 @@ export function contextSnapshot(context: unknown): string {
   }
 }
 
-// true when the context must be saved: no snapshot yet, or the current snapshot differs from the last saved one
+// true when the context must be saved: no snapshot yet, no usable current snapshot, or the current snapshot differs from the last saved one
 export function contextChanged(lastSaved: string | undefined, current: string): boolean {
-  return lastSaved === undefined || lastSaved !== current;
+  return lastSaved === undefined || current === '' || lastSaved !== current;
 }
