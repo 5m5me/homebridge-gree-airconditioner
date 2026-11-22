@@ -10,8 +10,10 @@ import { GreeCloudApi, DEFAULT_CLOUD_REGION } from './cloud/cloudApi.js';
 import type { CloudDeviceInfo } from './cloud/cloudApi.js';
 import { CloudSession } from './cloud/cloudSession.js';
 import { PLATFORM_NAME, PLUGIN_NAME, UDP_SCAN_PORT, DEFAULT_DEVICE_CONFIG, MODIFY_VERTICAL_SWING_POSITION, ENCRYPTION_VERSION, TS_TYPE,
-  DEF_SCAN_INTERVAL, TEMPERATURE_LIMITS, TEMPERATURE_STEPS, BINDING_TIMEOUT, CLOUD_MIN_STATUS_INTERVAL } from './settings.js';
+  DEF_SCAN_INTERVAL, TEMPERATURE_LIMITS, TEMPERATURE_STEPS, BINDING_TIMEOUT, CLOUD_MIN_STATUS_INTERVAL, LOST_AFTER, SWEEP_MIN_INTERVAL,
+  SWEEP_BATCH_SIZE, SWEEP_BATCH_DELAY } from './settings.js';
 import type { CloudConfig } from './settings.js';
+import { isIPv4, subnetPrefix, sweepTargets, isLost, sweepDue } from './addressSweep.js';
 
 import commands from './commands.js';
 import { version } from './version.js';
@@ -51,6 +53,13 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
   private cloudRetryTimer?: ReturnType<typeof setTimeout>;
   private cloudRetryDelay = 60; // seconds
   private cloudStopped = false;
+
+  // address search for lost local devices
+  private acs: Record<string, GreeAirConditioner> = {};
+  private startedAt = Date.now();
+  private lastSweepAt: Record<string, number> = {};
+  private sweepTimers: Array<ReturnType<typeof setTimeout>> = [];
+  private lostLogged: Record<string, boolean> = {};
 
   // This is only required when using Custom Services and Characteristics not support by HomeKit
    
@@ -130,6 +139,8 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
     // stop the cloud session and any pending cloud retry when Homebridge shuts down
     this.api.on('shutdown', () => {
       this.cloudStopped = true;
+      this.sweepTimers.forEach((timer) => clearTimeout(timer));
+      this.sweepTimers = [];
       if (this.cloudRetryTimer) {
         clearTimeout(this.cloudRetryTimer);
         this.cloudRetryTimer = undefined;
@@ -265,6 +276,7 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
       }
       accessory.registered = true;
       this.devices[accessory.context.device.mac] = accessory;
+      this.addCachedAddress(accessory);
     }
     // clean all invalid accessories found in cache
     if (!accessory.context) {
@@ -289,6 +301,7 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
     this.sendScan();
     setInterval(() => {
       this.sendScan();
+      this.sweepForLostDevices();
     }, (this.config.scanInterval || DEF_SCAN_INTERVAL) * 1000); // scanInterval in seconds (default = 60 sec)
   }
 
@@ -746,6 +759,7 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
       // load heatercooler accessory
       const acsocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
       const ac = new GreeAirConditioner(this, accessory, deviceConfig, accessory_ts?.context.device.mac, acsocket);
+      this.acs[deviceInfo.mac] = ac;
       if (deviceInfo.cloud === true) {
         // cloud controlled device: no UDP socket is bound and no bind request is sent (the socket stays unused)
         const key = this.cloudKeys[deviceInfo.mac];
@@ -812,6 +826,131 @@ export class GreeACPlatform implements DynamicPlatformPlugin {
       });
     }
   };
+
+  /**
+   * Adds the last known address of a cached local accessory to the unicast discovery targets.
+   * Never throws.
+   */
+  private addCachedAddress(accessory: MyPlatformAccessory): void {
+    try {
+      const device = accessory.context?.device;
+      if (accessory.context?.deviceType && accessory.context.deviceType !== 'HeaterCooler') {
+        return;
+      }
+      if (!device || device.cloud === true || typeof device.mac !== 'string' || device.mac.includes('@')) {
+        return;
+      }
+      const address = device.address;
+      if (!isIPv4(address) || this.pluginAddresses[address] !== undefined) {
+        return;
+      }
+      this.pluginAddresses[address] = '255.255.255.255';
+      this.log.debug(`Cached device address added to discovery list: ${address}`);
+    } catch (err) {
+      this.log.debug('Cached device address could not be added:', (err as Error)?.message);
+    }
+  }
+
+  /**
+   * Looks for configured local devices that stopped answering and sends discovery packets to every host address
+   * in the /24 of their last known address. Called from the repeating scan only. Never throws.
+   */
+  private sweepForLostDevices(): void {
+    try {
+      const now = Date.now();
+      const configured = (Array.isArray(this.config.devices) ? this.config.devices : []) as Array<{ mac?: unknown, ip?: unknown,
+        disabled?: unknown, cloudControl?: unknown }>;
+      const prefixes: Record<string, boolean> = {};
+      configured.forEach((item) => {
+        if (item?.disabled === true || item?.cloudControl === true || typeof item?.mac !== 'string' || !/^[a-f0-9]{12}$/.test(item.mac)) {
+          return;
+        }
+        const mac = item.mac;
+        const lastResponseAt = this.acs[mac]?.lastResponseAt ?? 0;
+        if (!isLost(lastResponseAt, this.startedAt, now, LOST_AFTER * 1000)) {
+          if (this.lostLogged[mac]) {
+            this.lostLogged[mac] = false;
+            this.log.info(`Device ${mac} is answering again`);
+          }
+          return;
+        }
+        const known = this.devices[mac]?.context?.device?.address;
+        const address = isIPv4(known) ? known : (isIPv4(item.ip) ? item.ip : undefined);
+        const prefix = subnetPrefix(address);
+        if (!address || !prefix) {
+          if (!this.lostLogged[mac]) {
+            this.lostLogged[mac] = true;
+            this.log.debug(`Device ${mac} is not answering and has no known IPv4 address, cannot search for it`);
+          }
+          return;
+        }
+        if (!this.lostLogged[mac]) {
+          this.lostLogged[mac] = true;
+          this.log.warn(`Device ${mac} is not answering at ${address}, searching ${prefix}.0/24 for it`);
+        }
+        prefixes[prefix] = true;
+      });
+      Object.keys(prefixes).forEach((prefix) => {
+        if (sweepDue(this.lastSweepAt[prefix], now, SWEEP_MIN_INTERVAL * 1000)) {
+          this.lastSweepAt[prefix] = now;
+          this.startSweep(prefix);
+        }
+      });
+    } catch (err) {
+      this.log.debug('Address search failed:', (err as Error)?.message);
+    }
+  }
+
+  /**
+   * Sends the discovery message to every host address of the /24 in small batches. Never throws.
+   */
+  private startSweep(prefix: string): void {
+    try {
+      const own: string[] = [];
+      Object.values(networkInterfaces()).forEach((nets) => {
+        (nets ?? []).forEach((iface) => {
+          if (iface.family === 'IPv4' || (iface.family as unknown) === 4) {
+            own.push(iface.address);
+          }
+        });
+      });
+      const targets = sweepTargets(prefix, own);
+      const message = Buffer.from(JSON.stringify({ t: 'scan' }));
+      this.log.debug(`Address search of ${prefix}.0/24 started (${targets.length} addresses)`);
+      let errorLogged = false;
+      const sendBatch = (start: number) => {
+        try {
+          targets.slice(start, start + SWEEP_BATCH_SIZE).forEach((addr) => {
+            try {
+              this.socket.send(message, 0, message.length, UDP_SCAN_PORT, addr, (error) => {
+                if (error && !errorLogged) {
+                  errorLogged = true;
+                  this.log.debug('Address search - send error:', error.message);
+                }
+              });
+            } catch (err) {
+              if (!errorLogged) {
+                errorLogged = true;
+                this.log.debug('Address search - send error:', (err as Error)?.message);
+              }
+            }
+          });
+          if (start + SWEEP_BATCH_SIZE < targets.length) {
+            const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+              this.sweepTimers = this.sweepTimers.filter((item) => item !== timer);
+              sendBatch(start + SWEEP_BATCH_SIZE);
+            }, SWEEP_BATCH_DELAY);
+            this.sweepTimers.push(timer);
+          }
+        } catch (err) {
+          this.log.debug('Address search failed:', (err as Error)?.message);
+        }
+      };
+      sendBatch(0);
+    } catch (err) {
+      this.log.debug('Address search failed:', (err as Error)?.message);
+    }
+  }
 
   sendScan() {
     const message = Buffer.from(JSON.stringify({ t: 'scan' }));

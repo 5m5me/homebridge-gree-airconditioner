@@ -151,3 +151,8 @@ export interface CloudConfig {
 }
 
 export const CLOUD_MIN_STATUS_INTERVAL = 30; // seconds, lowest status polling interval for cloud controlled devices
+
+export const LOST_AFTER = 90; // seconds without any answer after which a local device counts as lost
+export const SWEEP_MIN_INTERVAL = 300; // seconds between two address searches of the same subnet
+export const SWEEP_BATCH_SIZE = 16; // discovery packets sent per batch during an address search
+export const SWEEP_BATCH_DELAY = 50; // milliseconds between batches

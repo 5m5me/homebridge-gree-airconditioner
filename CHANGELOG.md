@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.1.0] - 2026-11-22
+
+- Last known addresses of cached units are used for discovery at start-up
+- A unit which stops answering is searched for in the /24 of its last known address (at most every 5 minutes per subnet), so a changed IP address no longer needs a config edit
+
 ## [3.0.0] - 2026-11-22
 
 Repackaged as a separate plugin so Homebridge no longer offers updates of the original plugin over it.
