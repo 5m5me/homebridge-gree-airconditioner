@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { CloudDeviceInfo, DEFAULT_CLOUD_REGION, GreeCloudApi } from './cloudApi.js';
 import { CloudConfig, PLATFORM_NAME } from '../settings.js';
@@ -66,7 +66,16 @@ async function main(): Promise<number> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+function isMainModule(): boolean {
+  try {
+    // realpath: the plugin folder can be reached through a symlink
+    return !!process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   main().then((code) => {
     process.exitCode = code;
   });

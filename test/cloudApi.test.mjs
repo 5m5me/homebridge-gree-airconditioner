@@ -211,3 +211,20 @@ test('formatDeviceLine for a sparse record', () => {
   const line = formatDeviceLine({ name: 'Bed', mac: '001122334455', key: '', online: false });
   assert.equal(line, 'Bed | mac=001122334455 | model=- | ver=- | online=no | parent=- | mid=- | key=missing');
 });
+
+test('home list with a failure result code throws instead of returning an empty list', async () => {
+  const fake = async (url) => {
+    const reply = url.endsWith('/App/UserLoginV2') ? { uid: 42, token: 'tok123' } : { r: 401, msg: 'token expired' };
+    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ enRes: encryptBody(JSON.stringify(reply)) }) };
+  };
+  const api = new GreeCloudApi('Australia', 'user@example.com', 'secret-pass', fake);
+  await api.login();
+  await assert.rejects(() => api.getHomes(), /Cloud home list failed: token expired/);
+  await assert.rejects(() => api.getDevices(7), /Cloud device list failed: token expired/);
+});
+
+test('a reply that is not valid JSON gives a fixed error that does not quote the reply', async () => {
+  const fake = async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => ({ enRes: encryptBody('{"token":"SECRET-TOKEN" broken') }) });
+  const api = new GreeCloudApi('Australia', 'user@example.com', 'secret-pass', fake);
+  await assert.rejects(() => api.login(), (err) => err.message === 'Unexpected cloud response');
+});

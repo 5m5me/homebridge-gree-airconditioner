@@ -17,6 +17,7 @@ export const GREE_CLOUD_SERVERS: Record<string, string> = {
 };
 
 export const DEFAULT_CLOUD_REGION = 'Australia';
+const REQUEST_TIMEOUT_MS = 30000;
 
 export interface CloudDeviceInfo {
   name: string;
@@ -32,7 +33,7 @@ export interface CloudDeviceInfo {
 export interface CloudHome { id: number; name: string; }
 export interface CloudCredentials { userId: number; token: string; }
 
-export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string }) =>
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }) =>
   Promise<{ ok: boolean; status: number; statusText: string; json(): Promise<unknown> }>;
 
 export function md5(input: string): string {
@@ -112,6 +113,7 @@ export class GreeCloudApi {
         'Charset': 'utf-8',
       },
       body: encryptBody(JSON.stringify(body)),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} ${response.statusText}`);
@@ -120,7 +122,24 @@ export class GreeCloudApi {
     if (typeof json?.enRes !== 'string') {
       throw new Error('Unexpected cloud response');
     }
-    return JSON.parse(decryptBody(json.enRes)) as Record<string, unknown>;
+    let data: unknown;
+    try {
+      data = JSON.parse(decryptBody(json.enRes));
+    } catch {
+      // the parse error text is not passed on: it can quote part of the reply, which may hold the session token
+      throw new Error('Unexpected cloud response');
+    }
+    if (typeof data !== 'object' || data === null) {
+      throw new Error('Unexpected cloud response');
+    }
+    return data as Record<string, unknown>;
+  }
+
+  // a reply carrying a result code other than 200 is a failure (for example an expired session)
+  private static requireOk(data: Record<string, unknown>, what: string): void {
+    if (data.r !== undefined && data.r !== 200) {
+      throw new Error(`Cloud ${what} failed: ${typeof data.msg === 'string' && data.msg ? data.msg : `result ${String(data.r)}`}`);
+    }
   }
 
   async login(): Promise<CloudCredentials> {
@@ -146,7 +165,11 @@ export class GreeCloudApi {
     const { userId, token } = this.requireCredentials();
     const body = buildBody({ token, uid: userId }, this.now(), ['token', 'uid']);
     const data = await this.send('/App/GetHomes', body);
-    const homes = Array.isArray(data.home) ? data.home as Array<Record<string, unknown>> : [];
+    GreeCloudApi.requireOk(data, 'home list');
+    if (!Array.isArray(data.home)) {
+      throw new Error('Cloud home list failed: unexpected reply');
+    }
+    const homes = data.home as Array<Record<string, unknown>>;
     return homes.map((h) => ({ id: Number(h.id), name: trimmed(h.name) }));
   }
 
@@ -154,7 +177,11 @@ export class GreeCloudApi {
     const { userId, token } = this.requireCredentials();
     const body = buildBody({ token, homeId, uid: userId }, this.now(), ['token', 'uid', 'homeId']);
     const data = await this.send('/App/GetDevsInRoomsOfHomeV2', body);
-    const rooms = Array.isArray(data.rooms) ? data.rooms as Array<Record<string, unknown>> : [];
+    GreeCloudApi.requireOk(data, 'device list');
+    if (!Array.isArray(data.rooms)) {
+      throw new Error('Cloud device list failed: unexpected reply');
+    }
+    const rooms = data.rooms as Array<Record<string, unknown>>;
     const devices: CloudDeviceInfo[] = [];
     for (const room of rooms) {
       const devs = Array.isArray(room.devs) ? room.devs as Array<Record<string, unknown>> : [];
