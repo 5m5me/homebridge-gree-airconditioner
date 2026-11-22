@@ -1,3 +1,9 @@
+> **This is the 5m5 fork** of [eibenp/homebridge-gree-airconditioner](https://github.com/eibenp/homebridge-gree-airconditioner), packaged as a separate plugin named `homebridge-gree-5m5`. It adds a Dry switch (`dryControlEnabled`) and control of cloud-only units through the Gree cloud (`cloudControl`). It is installed from a version tag of this repository and is not published to npm, so Homebridge does not offer updates for it. To install or update, run this in the Homebridge folder and restart the child bridge (replace the version as needed):
+>
+> `npm install --save --omit=dev https://github.com/5m5me/homebridge-gree-airconditioner/archive/refs/tags/v3.0.0.tar.gz`
+>
+> Do not install the original `homebridge-gree-ac` plugin alongside it: both use the same platform name.
+
 <span align="center">
 
 # Homebridge GREE Air Conditioner Platform Plugin

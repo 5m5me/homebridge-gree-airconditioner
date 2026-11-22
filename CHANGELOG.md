@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.0] - 2026-11-22
+
+Repackaged as a separate plugin so Homebridge no longer offers updates of the original plugin over it.
+
+- Package name is now "homebridge-gree-5m5" (display name "Gree AC (5m5)"). The platform name in the configuration ("GREEAirConditioner") is unchanged, so existing settings keep working
+- Releases are installed from version tags of the 5m5me fork, not from a moving branch
+- No functional change compared to 2.4.0-cloud.1
+
 ## [2.4.0-cloud.1] - 2026-11-22
 
 - Cloud control for cloud-only units: set "cloudControl" on a device to control it through the Gree+ cloud account
