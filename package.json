@@ -2,7 +2,7 @@
   "name": "homebridge-gree-ac",
   "displayName": "GREE Air Conditioner",
   "type": "module",
-  "version": "2.3.3-dry.2",
+  "version": "2.3.3-dry.3",
   "private": false,
   "description": "Control GREE Air Conditioners from Homebridge",
   "author": "Peter Eiben",
@@ -39,7 +39,8 @@
     "global": "npm run build && npm link"
   },
   "dependencies": {
-    "homebridge-lib": "^8.0.1"
+    "homebridge-lib": "^8.0.1",
+    "mqtt": "^5.16.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.3-dry.3] - 2026-11-22
+
+- New cloud messaging session (MQTT over TLS) that carries encrypted status requests and commands to a cloud-only unit. Not used by the plugin yet
+- The probe command has a new "--status <mac>" mode that reads one unit's live status through the cloud
+
 ## [2.3.3-dry.2] - 2026-11-22
 
 - New optional "cloud" settings (username, password, region) for a Gree+ cloud account, for cloud-only units. Not used to control units yet
