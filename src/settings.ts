@@ -142,3 +142,9 @@ export const BINDING_TIMEOUT = 29000; // milliseconds
 
 export const DRY_RETRY_INTERVAL = 3000; // milliseconds between dry command confirmation checks
 export const DRY_MAX_RESENDS = 2; // how many times a dry command is resent if the device does not confirm it
+
+export interface CloudConfig {
+  username?: string;
+  password?: string;
+  region?: string;
+}

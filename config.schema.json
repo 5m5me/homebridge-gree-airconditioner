@@ -30,6 +30,35 @@
         "type": "boolean",
         "default": false
       },
+      "cloud": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "required": false
+          },
+          "password": {
+            "type": "string",
+            "required": false
+          },
+          "region": {
+            "type": "string",
+            "required": false,
+            "default": "Australia",
+            "enum": [
+              "Australia",
+              "China Mainland",
+              "East South Asia",
+              "Europe",
+              "India",
+              "Middle East",
+              "North American",
+              "Russia",
+              "South American"
+            ]
+          }
+        }
+      },
       "devices": {
         "type": "array",
         "items": {
@@ -337,6 +366,30 @@
           "condition": {
             "functionBody": "return model.disableAutoDetection;"
           }
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Gree+ cloud account (for cloud-only units)",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        {
+          "key": "cloud.username",
+          "title": "Username:",
+          "description": "Gree+ account email. A separate account shared with your units is recommended."
+        },
+        {
+          "key": "cloud.password",
+          "type": "password",
+          "title": "Password:",
+          "description": "Stored in plain text in the Homebridge config file"
+        },
+        {
+          "key": "cloud.region",
+          "title": "Region:",
+          "description": "Gree cloud region of the account (Australia if empty)"
         }
       ]
     },

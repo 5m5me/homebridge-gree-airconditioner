@@ -373,6 +373,26 @@ Recommended customized configuration:
 
 ## Tips
 
+### Cloud-only units (experimental)
+
+Some units cannot be reached on the local network and can only be controlled through the Gree+ cloud. This version adds the account settings and a probe command for those units. **In this version the cloud account is only used by the probe. It does not yet control any unit.**
+
+The settings are in the "Gree+ cloud account (for cloud-only units)" section of the platform configuration:
+
+* `cloud.username`: the Gree+ account email
+* `cloud.password`: the Gree+ account password
+* `cloud.region`: the Gree cloud region of the account (default: `Australia`)
+
+The password is stored in plain text in the Homebridge `config.json`. Using a separate Gree+ account that the unit is shared with is recommended, rather than your main account.
+
+To check which devices the account can see, run the probe on the Homebridge host:
+
+```
+node node_modules/homebridge-gree-ac/dist/cloud/cloudProbe.js [path-to-config.json]
+```
+
+The config path defaults to `/var/lib/homebridge/config.json`. The probe lists each device with its MAC address, model, version and online state. It never prints the password, the session token or the device keys.
+
 ### MAC Address in GREE+ mobile app
 
 Open selected device and in the upper right corner select menu symbol:
