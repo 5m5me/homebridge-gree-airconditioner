@@ -7,6 +7,7 @@ import { PLATFORM_NAME, PLUGIN_NAME, DeviceConfig, TEMPERATURE_TABLE, MODIFY_VER
   TEMPERATURE_LIMITS, DEFAULT_DEVICE_CONFIG, DRY_RETRY_INTERVAL, DRY_MAX_RESENDS } from './settings.js';
 import { GreeAirConditionerTS } from './tsAccessory.js';
 import crypto from './crypto.js';
+import { contextSnapshot, contextChanged } from './contextSave.js';
 import type { CommandValueMap, Commands } from './commands.js';
 import commands from './commands.js';
 import type { DryState } from './dryControl.js';
@@ -28,6 +29,8 @@ export class GreeAirConditioner {
   public key?: string;
   // monotonic timestamp in milliseconds (performance.now) of the last package processed from the device, 0 if none since start
   public lastResponseAt = 0;
+  private lastSavedContext?: string;
+  private lastUnreadableWarningAt?: number;
   // set for cloud controlled devices: sends an encrypted pack through the cloud session, returns false if it could not be sent
   public cloudSend?: (pack: string, tag?: string) => boolean;
   private cols?: Array<string>;
@@ -1622,7 +1625,7 @@ export class GreeAirConditioner {
         this.accessory.context.TargetHeaterCoolerState = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
         break;
       }
-      this.platform.api.updatePlatformAccessories([this.accessory]);
+      this.saveContextIfChanged();
     }
     // Current Temperature
     if (props.includes(commands.temperature.code)) {
@@ -1726,7 +1729,7 @@ export class GreeAirConditioner {
         this.HeaterCooler?.getCharacteristic(this.platform.Characteristic.RotationSpeed).updateValue(speedValue);
         this.accessory.context.HeaterCoolerRotationSpeed = speedValue;
       }
-      this.platform.api.updatePlatformAccessories([this.accessory]);
+      this.saveContextIfChanged();
     }
     // Fan Rotation Speed
     if (fanActive) {
@@ -1760,30 +1763,59 @@ export class GreeAirConditioner {
   // device communication functions
 
   handleMessage = (msg: Buffer, rinfo: {address: string, family: string, port: number, size: number}) => {
-    if (this.accessory.context.device.address === rinfo.address) {
-      this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage -> %s`, msg.toString());
-      this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage -> Encryption version: %i`,
-        this.accessory.context.device.encryptionVersion);
-      const message = JSON.parse(msg.toString());
-      if (!message.pack) {
-        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
-        this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
-        return;
+    // a stage is tracked so the warning can say whether reading or processing failed
+    let stage = 'reading or decrypting the message';
+    try {
+      if (this.accessory.context.device.address === rinfo.address) {
+        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage -> %s`, msg.toString());
+        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage -> Encryption version: %i`,
+          this.accessory.context.device.encryptionVersion);
+        const message = JSON.parse(msg.toString());
+        if (!message.pack) {
+          this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
+          this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
+          return;
+        }
+        let pack;
+        if (this.accessory.context.device.encryptionVersion === 1) {
+          pack = crypto.decrypt_v1(message.pack, message.i === 1 ? undefined : this.key);
+        } else if (this.accessory.context.device.encryptionVersion === 2 && message.tag !== undefined) {
+          pack = crypto.decrypt_v2(message.pack, message.tag, message.i === 1 ? undefined : this.key);
+        } else {
+          this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
+          this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
+          return;
+        }
+        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Package -> %j`, pack);
+        stage = 'processing the message';
+        this.processPack(pack);
       }
-      let pack;
-      if (this.accessory.context.device.encryptionVersion === 1) {
-        pack = crypto.decrypt_v1(message.pack, message.i === 1 ? undefined : this.key);
-      } else if (this.accessory.context.device.encryptionVersion === 2 && message.tag !== undefined) {
-        pack = crypto.decrypt_v2(message.pack, message.tag, message.i === 1 ? undefined : this.key);
-      } else {
-        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
-        this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
-        return;
+    } catch (err) {
+      try {
+        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Error while ${stage}: %s`, (err as Error)?.message);
+        const now = performance.now();
+        if (this.lastUnreadableWarningAt === undefined || now - this.lastUnreadableWarningAt >= 60000) {
+          this.lastUnreadableWarningAt = now;
+          this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: a message from the device could not be read (${stage} failed)`);
+        }
+      } catch {
+        // nothing may escape a UDP message handler
       }
-      this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Package -> %j`, pack);
-      this.processPack(pack);
     }
   };
+
+  // saves the accessory cache only when something stored in the context changed
+  private saveContextIfChanged() {
+    try {
+      const snapshot = contextSnapshot(this.accessory.context);
+      if (contextChanged(this.lastSavedContext, snapshot)) {
+        this.platform.api.updatePlatformAccessories([this.accessory]);
+        this.lastSavedContext = snapshot;
+      }
+    } catch (err) {
+      this.platform.log.debug(`[${this.getDeviceLabel()}] saveContextIfChanged - Error: %s`, (err as Error)?.message);
+    }
+  }
 
   // processes a decrypted package from the device (used by the local message handler and by the cloud session)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
