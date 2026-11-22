@@ -1,6 +1,6 @@
 > **This is the 5m5 fork** of [eibenp/homebridge-gree-airconditioner](https://github.com/eibenp/homebridge-gree-airconditioner), packaged as a separate plugin named `homebridge-gree-5m5`. It adds a Dry switch (`dryControlEnabled`) and control of cloud-only units through the Gree cloud (`cloudControl`). The plugin follows locally controlled units by MAC address, so a unit whose IP address changes is found again automatically within a few minutes, as long as it stays in the same /24 network as its last known address. While a unit is being searched for, discovery packets reach every address in that /24 network, so any other Gree unit there which is not in the config is added automatically, exactly as it would be on the local network, unless `disableAutoDetection` is turned on. It is installed from a versioned release branch of this repository (one branch per version, never changed after release) and is not published to npm, so Homebridge does not offer updates for it. To install or update, run this in the Homebridge folder and restart the child bridge (replace the version as needed):
 >
-> `npm install --save --omit=dev https://github.com/5m5me/homebridge-gree-airconditioner/archive/refs/heads/release-3.0.0.tar.gz`
+> `npm install --save --omit=dev https://github.com/5m5me/homebridge-gree-airconditioner/archive/refs/heads/release-3.1.0.tar.gz`
 >
 > Do not install the original `homebridge-gree-ac` plugin alongside it: both use the same platform name.
 
