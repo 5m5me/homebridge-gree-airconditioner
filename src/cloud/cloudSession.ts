@@ -15,6 +15,9 @@ export const GREE_MQTT_SERVERS: Record<string, string> = {
 export const GREE_MQTT_PORT = 1984;
 
 const RENEW_RETRY_MS = 60_000;
+const RENEW_RETRY_MAX_MS = 30 * 60_000;
+const RENEW_MIN_INTERVAL_MS = 5 * 60_000;
+const ERROR_FALLBACK_MS = 30_000;
 const CLOSES_BEFORE_RENEW = 3;
 
 export interface CloudEnvelope {
@@ -65,6 +68,16 @@ export function macFromTopic(topic: string): string | undefined {
   return undefined;
 }
 
+// replaces every occurrence of each secret with [redacted]; empty secrets are ignored
+export function redactSecrets(text: string, secrets: string[]): string {
+  let result = text;
+  // longest first, so a secret that contains another one is replaced as a whole
+  for (const secret of secrets.filter((s) => s !== '').sort((a, b) => b.length - a.length)) {
+    result = result.split(secret).join('[redacted]');
+  }
+  return result;
+}
+
 export function randomCid(): string {
   return String(randomInt(1, 10)) + Array.from({ length: 9 }, () => String(randomInt(0, 10))).join('');
 }
@@ -103,9 +116,11 @@ export class CloudSession {
   private readonly log?: CloudSessionLog;
   private readonly connectFn: MqttConnect;
   private readonly renew?: () => Promise<{ userId: number; token: string }>;
+  private readonly now: () => number;
   private readonly devices = new Map<string, RegisteredDevice>();
   private userId: number;
   private token: string;
+  private previousToken?: string;
   private client?: MqttClientLike;
   private started = false;
   private stopped = false;
@@ -113,6 +128,10 @@ export class CloudSession {
   private closeCount = 0;
   private renewing = false;
   private renewTimer?: NodeJS.Timeout;
+  private fallbackTimer?: NodeJS.Timeout;
+  private lastRenewAttemptAt?: number;
+  private renewFailures = 0;
+  private lastErrorMessage?: string;
 
   constructor(options: {
     region: string;
@@ -121,6 +140,7 @@ export class CloudSession {
     log?: CloudSessionLog;
     connect?: MqttConnect;
     renew?: () => Promise<{ userId: number; token: string }>;
+    now?: () => number;
   }) {
     const broker = GREE_MQTT_SERVERS[options.region];
     if (!broker) {
@@ -132,6 +152,7 @@ export class CloudSession {
     this.log = options.log;
     this.connectFn = options.connect ?? defaultConnect;
     this.renew = options.renew;
+    this.now = options.now ?? Date.now;
   }
 
   get connected(): boolean {
@@ -153,6 +174,10 @@ export class CloudSession {
       clearTimeout(this.renewTimer);
       this.renewTimer = undefined;
     }
+    if (this.fallbackTimer) {
+      clearTimeout(this.fallbackTimer);
+      this.fallbackTimer = undefined;
+    }
     const client = this.client;
     this.client = undefined;
     client?.end(true);
@@ -173,7 +198,7 @@ export class CloudSession {
     const envelope = buildEnvelope(device.mac, pack, this.userId, randomCid(), tag);
     this.client.publish(requestTopic(device.mac), JSON.stringify(envelope), { qos: 1 }, (err) => {
       if (err) {
-        this.log?.warn(`Cloud publish to ${device.mac} failed: ${err.message}`);
+        this.log?.warn(`Cloud publish to ${device.mac} failed: ${this.redact(err.message)}`);
       }
     });
     return true;
@@ -198,6 +223,7 @@ export class CloudSession {
       rejectUnauthorized: false,
       reconnectPeriod: 5000,
       connectTimeout: 30000,
+      reconnectOnConnackError: true,
     });
     this.client = client;
     // events from a client that has been replaced are ignored
@@ -207,6 +233,7 @@ export class CloudSession {
       }
       this.isConnected = true;
       this.closeCount = 0;
+      this.lastErrorMessage = undefined;
       this.log?.info(`Connected to ${this.broker}`);
       for (const device of this.devices.values()) {
         this.subscribeDevice(client, device.mac);
@@ -227,11 +254,19 @@ export class CloudSession {
       if (this.client !== client || this.stopped) {
         return;
       }
-      const message = err?.message ?? '';
-      this.log?.debug(`Cloud connection error: ${message}`);
-      if (message.includes('Not authorized') || message.includes('Bad username or password')) {
+      const raw = typeof err?.message === 'string' ? err.message : '';
+      const message = this.redact(raw);
+      if (message !== this.lastErrorMessage) {
+        this.lastErrorMessage = message;
+        this.log?.warn(`Cloud connection error: ${message}`);
+      } else {
+        this.log?.debug(`Cloud connection error repeated: ${message}`);
+      }
+      if (raw.includes('Not authorized') || raw.includes('Bad username or password')) {
         this.startRenewal();
       }
+      // the library may not reconnect after a refusal: make sure the session recovers on its own
+      this.scheduleFallback();
     }) as (...args: never[]) => void);
     client.on('message', ((topic: string, payload: Buffer) => {
       if (this.client !== client || this.stopped) {
@@ -244,15 +279,18 @@ export class CloudSession {
   private subscribeDevice(client: MqttClientLike, mac: string): void {
     client.subscribe(topicsFor(mac), { qos: 1 }, (err) => {
       if (err) {
-        this.log?.warn(`Cloud subscribe for ${mac} failed: ${err.message}`);
+        this.log?.warn(`Cloud subscribe for ${mac} failed: ${this.redact(err.message)}`);
       }
     });
   }
 
   private handleMessage(topic: string, payload: Buffer): void {
+    let device: RegisteredDevice | undefined;
+    let pack: Record<string, unknown>;
+    let kind: 'response' | 'status';
     try {
       const mac = macFromTopic(topic);
-      const device = mac ? this.devices.get(mac.toLowerCase()) : undefined;
+      device = mac ? this.devices.get(mac.toLowerCase()) : undefined;
       if (!device) {
         return;
       }
@@ -260,16 +298,61 @@ export class CloudSession {
         this.log?.debug(`Cloud connect message for ${device.mac}`);
         return;
       }
-      const kind = topic.startsWith('response/') ? 'response' : 'status';
+      kind = topic.startsWith('response/') ? 'response' : 'status';
       const envelope = JSON.parse(payload.toString('utf8')) as { pack?: unknown };
       if (typeof envelope.pack !== 'string' || envelope.pack === '') {
         return;
       }
-      device.handler(decryptPackTolerant(envelope.pack, device.key), kind);
+      pack = decryptPackTolerant(envelope.pack, device.key);
     } catch {
       // the payload and the error text are not logged
       this.log?.debug('Could not process a cloud message');
+      return;
     }
+    try {
+      device.handler(pack, kind);
+    } catch {
+      // the error text is not logged
+      this.log?.warn('A cloud device handler failed');
+    }
+  }
+
+  private redact(text: string): string {
+    const secrets = [this.token];
+    if (this.previousToken) {
+      secrets.push(this.previousToken);
+    }
+    for (const device of this.devices.values()) {
+      secrets.push(device.key);
+    }
+    return redactSecrets(text, secrets);
+  }
+
+  // after an error, make sure a new client is opened if the session is still not connected 30 seconds later
+  private scheduleFallback(): void {
+    if (this.fallbackTimer || this.stopped || this.renewing) {
+      return;
+    }
+    this.fallbackTimer = setTimeout(() => {
+      this.fallbackTimer = undefined;
+      if (this.stopped || this.renewing || this.isConnected) {
+        return;
+      }
+      this.log?.info('Opening a new cloud connection after an error');
+      try {
+        const old = this.client;
+        this.client = undefined;
+        try {
+          old?.end(true);
+        } catch {
+          // the old client is already replaced
+        }
+        this.openClient();
+      } catch {
+        this.log?.warn('Opening a new cloud connection failed');
+        this.scheduleFallback();
+      }
+    }, ERROR_FALLBACK_MS);
   }
 
   private startRenewal(): void {
@@ -277,7 +360,21 @@ export class CloudSession {
       return;
     }
     this.renewing = true;
+    // at least 5 minutes between renewal attempts, so a broker-only outage cannot cause a storm of sign-ins
+    const wait = this.lastRenewAttemptAt === undefined ? 0 : this.lastRenewAttemptAt + RENEW_MIN_INTERVAL_MS - this.now();
+    if (wait > 0) {
+      this.log?.debug(`Signing in again is deferred for ${Math.ceil(wait / 1000)} seconds`);
+      this.scheduleRenewal(wait);
+      return;
+    }
     this.attemptRenewal();
+  }
+
+  private scheduleRenewal(delayMs: number): void {
+    this.renewTimer = setTimeout(() => {
+      this.renewTimer = undefined;
+      this.attemptRenewal();
+    }, delayMs);
   }
 
   private attemptRenewal(): void {
@@ -285,33 +382,52 @@ export class CloudSession {
     if (!renew || this.stopped) {
       return;
     }
+    this.lastRenewAttemptAt = this.now();
     this.log?.info('Signing in to the Gree cloud again');
-    renew().then(
+    let pending: Promise<{ userId: number; token: string }>;
+    try {
+      pending = Promise.resolve(renew());
+    } catch {
+      this.renewalFailed();
+      return;
+    }
+    pending.then(
       (credentials) => {
         if (this.stopped) {
           return;
         }
-        this.userId = credentials.userId;
-        this.token = credentials.token;
-        this.closeCount = 0;
-        this.isConnected = false;
-        const old = this.client;
-        this.client = undefined;
-        old?.end(true);
-        this.renewing = false;
-        this.openClient();
-      },
-      () => {
-        // the error text is not logged
-        this.log?.warn('Signing in to the Gree cloud again failed, retrying in 60 seconds');
-        if (this.stopped) {
-          return;
+        try {
+          this.applyCredentials(credentials);
+        } catch {
+          this.renewalFailed();
         }
-        this.renewTimer = setTimeout(() => {
-          this.renewTimer = undefined;
-          this.attemptRenewal();
-        }, RENEW_RETRY_MS);
       },
+      () => this.renewalFailed(),
     );
+  }
+
+  private applyCredentials(credentials: { userId: number; token: string }): void {
+    this.previousToken = this.token;
+    this.userId = credentials.userId;
+    this.token = credentials.token;
+    this.closeCount = 0;
+    this.isConnected = false;
+    const old = this.client;
+    this.client = undefined;
+    old?.end(true);
+    this.openClient();
+    this.renewFailures = 0;
+    this.renewing = false;
+  }
+
+  private renewalFailed(): void {
+    if (this.stopped) {
+      return;
+    }
+    this.renewFailures += 1;
+    const delay = Math.min(RENEW_RETRY_MS * 2 ** (this.renewFailures - 1), RENEW_RETRY_MAX_MS);
+    // the error text is not logged
+    this.log?.warn(`Signing in to the Gree cloud again failed, retrying in ${Math.round(delay / 1000)} seconds`);
+    this.scheduleRenewal(delay);
   }
 }

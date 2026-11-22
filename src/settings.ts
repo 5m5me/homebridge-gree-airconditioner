@@ -55,6 +55,7 @@ export interface DeviceConfig {
   ip?: string;
   fanControlEnabled?: boolean;
   dryControlEnabled?: boolean;
+  cloudControl?: boolean;
   silentTimeRange?: string;
 }
 
@@ -148,3 +149,5 @@ export interface CloudConfig {
   password?: string;
   region?: string;
 }
+
+export const CLOUD_MIN_STATUS_INTERVAL = 30; // seconds, lowest status polling interval for cloud controlled devices

@@ -25,6 +25,8 @@ export class GreeAirConditioner {
   private dryResends = 0;
   private dryTimer?: ReturnType<typeof setInterval>;
   public key?: string;
+  // set for cloud controlled devices: sends an encrypted pack through the cloud session, returns false if it could not be sent
+  public cloudSend?: (pack: string, tag?: string) => boolean;
   private cols?: Array<string>;
   private status: { [key: string]: unknown };
   private tsAccessory: GreeAirConditionerTS | null = null;
@@ -1776,92 +1778,102 @@ export class GreeAirConditioner {
         return;
       }
       this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Package -> %j`, pack);
-      switch ((pack.t as string).toLowerCase()) {
-      case 'bindok': // package type is binding confirmation
-        this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: Binding response received from already bound device`);
-        break;
-      case 'dat': // package type is device status
-        if (this.accessory.bound){
-          let invalidTempFromDevice = false;
-          pack.cols.forEach((col: string, i: number) => {
-            if (col === commands.temperature.code && (pack.dat[i] <= 0 || pack.dat[i] >= 100)) {
-              // temperature value outside of valid range (1-99 -> -39°C - +59°C) should be ignored (means: no sensor data)
-              invalidTempFromDevice = true;
-            } else {
-              this.status[col] = pack.dat[i];
-            }
-            if (col === commands.power.code) {
-              // power status received -> no more power change pending state
-              this.powerPending = -1;
-            }
-            if (col === commands.mode.code) {
-              // mode status received -> no more mode change pending state
-              this.modePending = -1;
-            }
-            if (col === commands.buzzer.code && pack.dat[i] !== commands.buzzer.value.off && pack.dat[i] !== commands.buzzer.value.on &&
-                this.silentTimeRanges !== undefined) {
-              // invalid buzzer status -> disable silent time
-              this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: Device does not support command muting`);
-              delete this.silentTimeRanges;
-            }
-          });
-          if (this.silentTimeRanges !== undefined && pack.cols.find((col: string) => col === commands.buzzer.code) === undefined) {
-            // status pack does not contain buzzer status -> disable silent time
+      this.processPack(pack);
+    }
+  };
+
+  // processes a decrypted package from the device (used by the local message handler and by the cloud session)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public processPack(pack: any) {
+    if (typeof pack?.t !== 'string') {
+      this.platform.log.debug(`[${this.getDeviceLabel()}] processPack - package without type`);
+      return;
+    }
+    switch ((pack.t as string).toLowerCase()) {
+    case 'bindok': // package type is binding confirmation
+      this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: Binding response received from already bound device`);
+      break;
+    case 'dat': // package type is device status
+      if (this.accessory.bound){
+        let invalidTempFromDevice = false;
+        pack.cols.forEach((col: string, i: number) => {
+          if (col === commands.temperature.code && (pack.dat[i] <= 0 || pack.dat[i] >= 100)) {
+            // temperature value outside of valid range (1-99 -> -39°C - +59°C) should be ignored (means: no sensor data)
+            invalidTempFromDevice = true;
+          } else {
+            this.status[col] = pack.dat[i];
+          }
+          if (col === commands.power.code) {
+            // power status received -> no more power change pending state
+            this.powerPending = -1;
+          }
+          if (col === commands.mode.code) {
+            // mode status received -> no more mode change pending state
+            this.modePending = -1;
+          }
+          if (col === commands.buzzer.code && pack.dat[i] !== commands.buzzer.value.off && pack.dat[i] !== commands.buzzer.value.on &&
+              this.silentTimeRanges !== undefined) {
+            // invalid buzzer status -> disable silent time
             this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: Device does not support command muting`);
             delete this.silentTimeRanges;
           }
-          this.platform.log.debug(`[${this.getDeviceLabel()}] Device status -> %j`, this.status);
-          if (!(pack.cols as [string]).includes(commands.temperature.code) || invalidTempFromDevice) {
-            // temperature is not accessible -> use targetTemperature
-            const targetTemp: number = this.status[commands.targetTemperature.code] !== undefined ?
-              (this.status[commands.targetTemperature.code] as number) : 25; // use default if target temperature is also unknown
-            this.status[commands.temperature.code] = targetTemp + this.deviceConfig.sensorOffset;
-            this.platform.log.debug(`[${this.getDeviceLabel()}] Current temperature not available`,
-              '- Threshold temperature is used as current (' + commands.targetTemperature.code + '->' + commands.temperature.code + ')');
-            if (this.TemperatureSensor !== undefined) {
-              this.accessory.removeService(this.TemperatureSensor);
-              this.TemperatureSensor = undefined;
-              this.platform.log.debug(`[${this.getDeviceLabel()}] temperature is not accessible -> Temperature Sensor removed`);
-            }
-          }
-          this.updateStatus(pack.cols as string[]);
+        });
+        if (this.silentTimeRanges !== undefined && pack.cols.find((col: string) => col === commands.buzzer.code) === undefined) {
+          // status pack does not contain buzzer status -> disable silent time
+          this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: Device does not support command muting`);
+          delete this.silentTimeRanges;
         }
-        break;
-      case 'res': // package type is response
-        if (this.accessory.bound){
-          this.platform.log.debug(`[${this.getDeviceLabel()}] Device response`, pack.opt, pack.p || pack.val);
-          const updatedParams = [] as Array<string>;
-          pack.opt.forEach((opt: string, i: number) => {
-            const value: number = pack.p !== undefined ? pack.p[i] : pack.val[i];
-            if (this.status[opt] !== value) {
-              const cmd = this.getCommandName(commands, opt) || opt;
-              const oldval = this.getValueName(commands, opt, (this.status[opt] as number)) || this.status[opt];
-              const newval = this.getValueName(commands, opt, value) || value;
-              updatedParams.push(`${cmd}: ${oldval} -> ${newval}`);
-            }
-            this.status[opt] = value;
-            if (opt === commands.power.code) {
-              // response to power command -> no more power change pending state
-              this.powerPending = -1;
-            }
-            if (opt === commands.mode.code) {
-              // response to mode command -> no more mode change pending state
-              this.modePending = -1;
-            }
-          });
-          if (updatedParams.length > 0) {
-            this.platform.log.info(`[${this.getDeviceLabel()}] Device updated (%j)`, updatedParams);
+        this.platform.log.debug(`[${this.getDeviceLabel()}] Device status -> %j`, this.status);
+        if (!(pack.cols as [string]).includes(commands.temperature.code) || invalidTempFromDevice) {
+          // temperature is not accessible -> use targetTemperature
+          const targetTemp: number = this.status[commands.targetTemperature.code] !== undefined ?
+            (this.status[commands.targetTemperature.code] as number) : 25; // use default if target temperature is also unknown
+          this.status[commands.temperature.code] = targetTemp + this.deviceConfig.sensorOffset;
+          this.platform.log.debug(`[${this.getDeviceLabel()}] Current temperature not available`,
+            '- Threshold temperature is used as current (' + commands.targetTemperature.code + '->' + commands.temperature.code + ')');
+          if (this.TemperatureSensor !== undefined) {
+            this.accessory.removeService(this.TemperatureSensor);
+            this.TemperatureSensor = undefined;
+            this.platform.log.debug(`[${this.getDeviceLabel()}] temperature is not accessible -> Temperature Sensor removed`);
           }
-          this.updateStatus(pack.opt as string[]);
         }
-        break;
-      default:
-        this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Unknown message: %j`, message);
-        this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
-        break;
+        this.updateStatus(pack.cols as string[]);
       }
+      break;
+    case 'res': // package type is response
+      if (this.accessory.bound){
+        this.platform.log.debug(`[${this.getDeviceLabel()}] Device response`, pack.opt, pack.p || pack.val);
+        const updatedParams = [] as Array<string>;
+        pack.opt.forEach((opt: string, i: number) => {
+          const value: number = pack.p !== undefined ? pack.p[i] : pack.val[i];
+          if (this.status[opt] !== value) {
+            const cmd = this.getCommandName(commands, opt) || opt;
+            const oldval = this.getValueName(commands, opt, (this.status[opt] as number)) || this.status[opt];
+            const newval = this.getValueName(commands, opt, value) || value;
+            updatedParams.push(`${cmd}: ${oldval} -> ${newval}`);
+          }
+          this.status[opt] = value;
+          if (opt === commands.power.code) {
+            // response to power command -> no more power change pending state
+            this.powerPending = -1;
+          }
+          if (opt === commands.mode.code) {
+            // response to mode command -> no more mode change pending state
+            this.modePending = -1;
+          }
+        });
+        if (updatedParams.length > 0) {
+          this.platform.log.info(`[${this.getDeviceLabel()}] Device updated (%j)`, updatedParams);
+        }
+        this.updateStatus(pack.opt as string[]);
+      }
+      break;
+    default:
+      this.platform.log.debug(`[${this.getDeviceLabel()}] handleMessage - Unknown message: %j`, pack);
+      this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: handleMessage - Unknown response from device`);
+      break;
     }
-  };
+  }
 
   sendMessage(message: unknown) {
     this.platform.log.debug(`[${this.getDeviceLabel()}] sendMessage - Package -> %j`, message);
@@ -1877,6 +1889,15 @@ export class GreeAirConditioner {
       tag = encrypted.tag;
     } else {
       this.platform.log.warn(`[${this.getDeviceLabel()}] Warning: sendMessage -> Unsupported encryption version`);
+      return;
+    }
+    if (this.cloudSend) {
+      if (!this.cloudSend(pack, tag === '' ? undefined : tag)) {
+        this.platform.log.debug(`[${this.getDeviceLabel()}] sendMessage - not sent, the Gree cloud connection is not ready`);
+        // nothing was sent, so no reply will come: do not leave power / mode changes blocked as pending
+        this.powerPending = -1;
+        this.modePending = -1;
+      }
       return;
     }
     const payload = (tag === '') ? {
@@ -1937,7 +1958,10 @@ export class GreeAirConditioner {
   }
 
   requestDeviceStatus() {
-    const message = {
+    const message = this.cloudSend ? {
+      t: 'status',
+      cols: this.getCols(),
+    } : {
       mac: this.accessory.context.device.mac.split('@')[0],
       t: 'status',
       cols: this.getCols(),

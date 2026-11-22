@@ -272,6 +272,7 @@ It is possible to set some or all parameters to a customized value which is assi
                     "defaultVerticalSwing": 0,
                     "fanControlEnabled": false,
                     "dryControlEnabled": false,
+                    "cloudControl": false,
                     "defaultFanVerticalSwing": 0,
                     "silentTimeRange": "",
                     "disabled": false
@@ -326,6 +327,7 @@ You can always override any default parameter by adding a device identified by M
                     "defaultVerticalSwing": 0,
                     "fanControlEnabled": false,
                     "dryControlEnabled": false,
+                    "cloudControl": false,
                     "defaultFanVerticalSwing": 0,
                     "silentTimeRange": "",
                     "disabled": false
@@ -361,6 +363,7 @@ _It's not recommended to add the port and ip parameters. The above example conta
   * **defaultVerticalSwing** - specify the vertical swing position to be used when the plugin modifies it; if overriding is selected, then this value is valid for both heating/cooling and fan modes; if always set is selected, then this value controls only the heating/cooling modes not fan mode; valid values: Device default (0) = use device default, same position as used by the device by default without selecting a specific position / one of the following 5 positions: fixed Highest (2), fixed Higher (3), fixed Middle (4), fixed Lower (5), fixed Lowest (6)
   * **fanControlEnabled** - by default fan mode is not supported by the plugin because Apple's Heater Cooler accessory does not support fan mode; setting this parameter to true adds an additional Fan accessory to the Home App and turns on fan mode support in the plugin
   * **dryControlEnabled** - by default dry mode is not supported by the plugin because Apple's Heater Cooler accessory does not support dry mode; setting this parameter to true adds a "Dry" switch to the device in the Home App: turning it on puts the device into dry mode, turning it off powers the device off if it is still in dry mode; dry commands are confirmed against the device status and resent up to 2 times; turning this parameter off again removes the switch, so Home App automations which use it have to be recreated if it is turned back on
+  * **cloudControl** - set to true for a cloud-only unit which does not answer on the local network: the unit is controlled through the Gree+ cloud account configured in the cloud settings (see Cloud-only units); the unit needs no ip; status is polled no faster than every 30 seconds; default: false
   * **defaultFanVerticalSwing** - specify the vertical swing position to be set in fan mode when always set is selected; valid values: Device default (0) = use device default, same position as used by the device by default without selecting a specific position / one of the following 5 positions: fixed Highest (2), fixed Higher (3), fixed Middle (4), fixed Lower (5), fixed Lowest (6)
   * **silentTimeRange** - specify the time range when device shouldn't beep on commands received (format: HH:MM-HH:MM, e.g.: 22:00-08:30) _(not all AC units support this feature)_
   * **disabled** - set to true if you do not want to control this device in the Home App _(can be used also to temporarily remove the device from Home App but not if the device is not responding on the network any more)_
@@ -375,7 +378,7 @@ Recommended customized configuration:
 
 ### Cloud-only units (experimental)
 
-Some units cannot be reached on the local network and can only be controlled through the Gree+ cloud. This version adds the account settings and a probe command for those units. **In this version the cloud account is only used by the probe. It does not yet control any unit.**
+Some units cannot be reached on the local network and can only be controlled through the Gree+ cloud. Set `cloudControl` to true on such a device (identified by its MAC address as shown in Gree+, see below) to control it through the cloud with the same accessory features as a local unit. A cloud controlled device needs no `ip`. Status is polled no faster than every 30 seconds, even if `statusUpdateInterval` is lower. This needs internet access, the Gree+ cloud account below, and it depends on an unofficial Gree interface which may change or stop working without notice. Devices without `cloudControl` are not affected. A probe command is also available for checking the account.
 
 The settings are in the "Gree+ cloud account (for cloud-only units)" section of the platform configuration:
 
